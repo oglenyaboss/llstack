@@ -60,5 +60,5 @@ This classifier and written policy do not enforce branch protection. A hand-type
 ## Tests
 
 ```sh
-node --test skills/pr-risk/tests/
+node --test skills/pr-risk/tests/risk.test.mjs
 ```

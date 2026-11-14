@@ -59,7 +59,7 @@ Each key turns off a feature I don't use and the context it loads. `name-only` k
 
 ```sh
 bash skills/herdr-delegate/tests/run.sh
-node --test skills/pr-risk/tests/
+node --test skills/pr-risk/tests/risk.test.mjs
 ```
 
 `hd` runs against a fake `herdr`, so neither suite needs Herdr, a model or the network. CI runs both on Linux and macOS.

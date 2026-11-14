@@ -90,9 +90,9 @@ case_setup() {
 }
 
 run_case() {
-  local name="$1" fn="$2" tmp last
+  local name="$1" fn="$2" tmp last base="${TMPDIR:-/tmp}"
   CASE_NAME="$name"
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/hd-test.XXXXXX")"
+  tmp="$(mktemp -d "${base%/}/hd-test.XXXXXX")"
   if ( set -euo pipefail; case_setup "$tmp"; "$fn" ) > "$tmp/log" 2>&1; then
     printf 'ok %s\n' "$name"
   else
