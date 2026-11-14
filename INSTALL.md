@@ -20,9 +20,10 @@ Present the parts with your recommendation, based on step 1, and ask which to in
 | Part | What it gives | Needs |
 |---|---|---|
 | `issue-workflow` skill | capture → fact-checked readiness → execution → acceptance on GitHub Issues | git, gh |
+| `brief` skill | a standalone brief for any executor (subagent, another agent) and how to verify its result | nothing |
 | `pr-risk` skill | review depth and merge gates from the diff's risk tier | git, node 18+ |
 | `github-projects-api` skill | GitHub Projects v2 through `gh` | gh; only for teams that plan on a board |
-| `herdr-delegate` skill | the lead briefs and verifies, workers run in visible Herdr panes | Herdr, pi with a configured provider, bash 4.4+, jq, git 2.31+, `timeout` or `gtimeout`. On macOS: `brew install bash coreutils jq` |
+| `herdr-delegate` skill | the lead briefs and verifies, workers run in Herdr panes, `hd` runs each brief's Check and lists files outside its Scope | the `brief` skill (and `pr-risk` for reviews), Herdr, pi with a configured provider, bash 4.4+, jq, git 2.31+, `timeout` or `gtimeout`. On macOS: `brew install bash coreutils jq` |
 | rules | the working rules in `rules/AGENTS.md`, for the user's global agent instructions | nothing |
 
 Offer `herdr-delegate` only when step 1 found its requirements, or the user installs them now.

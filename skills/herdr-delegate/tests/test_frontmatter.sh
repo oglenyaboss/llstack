@@ -9,7 +9,7 @@ frontmatter() {
 
 case_frontmatter_contract() {
   local file dir name value desc bad=""
-  for file in "$ROOT/SKILL.md" "$ROOT/../pr-risk/SKILL.md"; do
+  for file in "$ROOT/SKILL.md" "$ROOT/../pr-risk/SKILL.md" "$ROOT/../brief/SKILL.md"; do
     [[ -f "$file" ]] || t_fail "missing $file"
     dir="$(basename "$(dirname "$file")")"
 
@@ -35,7 +35,7 @@ case_frontmatter_contract() {
       [[ "$value" == \"* || "$value" == \'* ]] && continue
       [[ "$value" == *": "* || "$value" == *" #"* ]] && bad+="${file#"$ROOT"/}: $line; "
     done < <(frontmatter "$file")
-  done < <(printf '%s\n' "$ROOT/SKILL.md" "$ROOT/../pr-risk/SKILL.md")
+  done < <(printf '%s\n' "$ROOT/SKILL.md" "$ROOT/../pr-risk/SKILL.md" "$ROOT/../brief/SKILL.md")
   [[ -z "$bad" ]] || t_fail "unquoted ': ' or ' #' in frontmatter breaks strict YAML parsers: $bad"
 }
 

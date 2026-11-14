@@ -1,14 +1,27 @@
 # llstack
 
-The coding-agent workflow I use every day. One agent is the lead. It decides, writes briefs and checks results, while cheaper models do the work in Herdr panes I can watch. Issues get their facts checked before anyone starts on them, and review depth follows the risk of the diff.
+How I work with coding agents every day. Agents write the code; a script decides when a task is done.
 
-| Part | What it does |
-| --- | --- |
-| [herdr-delegate](skills/herdr-delegate/SKILL.md) | Lead mode. `hd` starts pi workers, scouts, a sidekick and researchers in Herdr panes. After each task it runs the brief's Check command, lists files changed outside the brief's Scope, shows the exact diff of that task and appends a line to a journal. |
-| [pr-risk](skills/pr-risk/SKILL.md) | `risk.mjs` matches the diff against `.github/risk-tiers.yml` and prints low, medium or high. [The policy](skills/pr-risk/references/review-policy.md) maps each tier to reviewers, evidence and merge gates. |
-| [issue-workflow](skills/issue-workflow/SKILL.md) | An issue gets `ready-for-agent` only after every fact in it is checked against a pinned commit, acceptance cases are written and the owner's decision is quoted. |
-| [github-projects-api](skills/github-projects-api/SKILL.md) | GitHub Projects v2 through `gh`, with the API limits I ran into. |
-| [rules](rules/AGENTS.md) | My global rules for agents: look for an existing solution before writing code, change only what the task needs, prove the result, ask before anything irreversible. |
+1. **Before work.** An issue reaches an agent only after its facts are checked against the code at a pinned commit, its acceptance cases are written and the owner's decision is quoted. [issue-workflow](skills/issue-workflow/SKILL.md)
+2. **The task.** The brief settles every decision, names the traps and ends with a Check command, so a cheap model has nothing left to guess. [brief](skills/brief/SKILL.md)
+3. **The run.** The executor's "done" is a claim. `hd` runs the brief's Check itself, lists every file changed outside the brief's Scope, shows the exact diff of that task and logs it. One expensive model leads, cheap ones do the work in Herdr panes. [herdr-delegate](skills/herdr-delegate/SKILL.md)
+4. **Review.** A script maps the diff onto a path table: low, medium or high. The tier sets how many reviewers look, from which model families, and what has to pass before merge. [pr-risk](skills/pr-risk/SKILL.md)
+5. **Mistakes.** Every rework gets one question: which step should have caught it? A finding caught twice becomes a check.
+
+Only step 3 needs Herdr. The rest works in Claude Code, Codex or pi as is.
+
+A worker saying "done", a merged PR, a deploy and the owner's acceptance are four separate events. Only the last one closes an issue.
+
+Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing solution before writing code, change only what the task needs, prove the result, ask before anything irreversible) and [github-projects-api](skills/github-projects-api/SKILL.md), GitHub Projects v2 through `gh` with the API limits I ran into.
+
+## From my journal
+
+`hd` writes a line per task. From 9 to 14 November 2026:
+
+- 188 delegated tasks: 110 to workers, 35 to scouts, 25 to the sidekick, 18 to researchers.
+- 154 of them (82%) ran on DeepSeek V4.1 Flash. Claude was the lead.
+- 35 times a worker stopped and asked for a decision instead of guessing.
+- In 13 of 62 tasks with a Scope, `hd` flagged changed files outside it. Some were my own edits made in parallel: `hd` sees what changed, not who changed it.
 
 ## Install
 
@@ -21,22 +34,6 @@ Read https://raw.githubusercontent.com/oglenyaboss/llstack/main/INSTALL.md and s
 The agent checks what you have, asks which parts you want and shows every change before making it. It clones this repo and links the skills into your agent, so `git pull` updates them. Linux and macOS; on Windows, use WSL.
 
 By hand: clone the repo, link `skills/<name>` into your agent's skills directory and follow [INSTALL.md](INSTALL.md) from step 4.
-
-## The loop
-
-```text
-capture an issue
-→ check its facts at the base commit, write acceptance cases, get the owner's decision
-→ take ready work that nothing blocks
-→ brief a worker
-→ read the Check output, the Scope report and the diff
-→ review as deep as the risk tier asks
-→ record rework and turn repeated findings into checks
-```
-
-Most of the effort goes into the brief. Workers copy well and invent badly, and the lead verifies against the same brief, so a mistake in it passes verification. The format makes the lead settle every decision, name the traps and write the acceptance cases up front: [Standalone brief](skills/herdr-delegate/SKILL.md#standalone-brief).
-
-A worker saying "done", a merged PR, a deploy and the owner's acceptance are four separate events. Only the last one closes an issue.
 
 ## My Claude Code settings
 

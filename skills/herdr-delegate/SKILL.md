@@ -25,7 +25,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
 ## Loop
 
 1. **Decide.** Recon goes to a scout. Past three searches (grep, find, ls) on one question, you are doing recon: hand it over. You read only the lines where a decision lives, starting from the scout's file:line, and settle every choice the task contains, down to names and mappings. Where the result lives and what it replaces is the user's call: one question before the first brief. Done when no open choice is left for the executor. Working from an issue: its facts are hypotheses until a scout confirms them at the current HEAD; a false fact or a choice that is the user's sends the issue back to the user with the question (with the `needs-info` label when the project uses the `issue-workflow` labels), never into the brief as your guess.
-2. **Brief.** Write a standalone brief (below) to a file. Done when an agent with zero context could execute it without guessing.
+2. **Brief.** Read the `brief` skill ([../brief/SKILL.md](../brief/SKILL.md)) before your first brief of the session, and write the brief in its format to a file. Done when an agent with zero context could execute it without guessing.
 3. **Ask and wait.** Launch `hd ask <name> @brief.md` through your client's shell tool; the default timeout is 50 minutes. Continue independent work while it runs. When none remains, wait on the existing task handle until the command returns. A shell tool yielding control means the command is still running. `STATUS: still_working` from `hd` means continue with `hd wait <name>`. Done when the command returns an envelope to handle in step 4.
 4. **Read the envelope** by meaning; small models drift its keys and language.
    - `needs_decision`: decide, or ask the user if the choice is theirs, then `hd ask` the same agent; it keeps its context. A brief that contradicts the code is your error: fix the brief.
@@ -45,35 +45,9 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
 
 The assigned brief remains the completion criterion while waiting. Elapsed time, growing context, and other agents finishing are not reasons to shorten it or request an early report. Intervene on a concrete error, a request for a decision, observed work outside the brief, or a user instruction. A timeout calls for checking state and continuing the wait while the agent is progressing.
 
-## Standalone brief
+## Briefs in hd
 
-The agent sees none of your conversation. Give it something to copy:
-
-```
-Goal: one sentence, the observable result.
-Context: pointers: `path:line-range` for every fact that lives in a file, a pattern to copy
-         ("as in foo.ts:40-60"), payload paths to read first; exact names of new functions and files.
-Decisions: D1..Dn, what you chose where the files leave a choice open.
-Requirements: R1..Rn, one observable behavior each; every item of the issue or spec is here.
-Traps: where a plausible implementation goes wrong, with the correct shape: the check and
-       the write it guards in one transaction (`SELECT … FOR UPDATE`), a second concurrent
-       caller, the first/last/empty index, a repeat of the same request.
-Acceptance: the seam under test (public function, endpoint, component) and cases at it, "input → expected",
-       at least one per R and per trap; expected values are literals from the spec. The agent works
-       case by case: write the test, see it red, implement until green, next case.
-Scope: the files allowed to change, each in backticks, from the repo root: `src/a.ts` `src/auth/` `tests/*.test.ts`.
-       Everything else stays as is, including dependencies and existing tests. `hd` lists every changed file
-       outside these under `--- scope`. Like Check, it applies to this ask only: repeat it in every correction.
-Done when: exact command and expected output ("pnpm test slug → 13 passed"); SUMMARY shows each case red, then green.
-Check: `one shell command` proving Done when. `hd` runs it in the agent's cwd after the reply (10 min cap) and
-       appends exit code and output tail. It applies to this ask only: repeat it in every correction.
-```
-
-Acceptance is TDD done in the brief: you pick the seam and the cases, the agent runs red → green. A case tests behavior through the seam, never internals; an expected value recomputed the way the code computes it is tautological and passes by construction. An existing test that blocks the change is an open choice, never a deletion.
-
-**Pointers over prose.** A fact that lives in a file reaches the brief as a pointer with "copy as is"; prose carries only what no file holds: decisions, deviations, traps. A retelling is a second source of truth, the agent follows the more concrete one, and every drift in your retelling ships as a defect.
-
-The agent gets right what the brief names and misses what it leaves out, so correctness lives in Traps and Acceptance: spend your code reading on finding the traps. A pointer "as in X" hands over X's behavior with its edge cases: check they fit this task. One task per brief. A task spanning more than a few files becomes sequential briefs, each verified before the next. Brief only from code and payloads you read in this session.
+Two fields of the brief are mechanical here. After the reply, `hd` runs Check in the agent's cwd (10 minute cap) and appends its exit code and output tail under `--- check`, and lists every changed file outside Scope under `--- scope`. Both apply to one ask: repeat them in every correction. The agent shows each Acceptance case red, then green, in SUMMARY.
 
 ## Roles
 
