@@ -1,0 +1,24 @@
+# Path patterns -> risk tier, read by scripts/risk.mjs.
+# A file is high if it matches high; else low if it matches low; else medium.
+# The tier of a branch is the highest tier among its changed files.
+# Patterns: ** any number of directories, * within one path segment, ? one character.
+#
+# Replace these with the project's own paths. High belongs on the paths where a
+# wrong change hurts most: auth and secrets, payments, schema and migrations,
+# the main data path, deploy and CI. Low belongs on docs, assets, and tests
+# outside the high paths. The tiers are the owner's decision.
+
+high:
+  - "src/auth/**"
+  - "src/payments/**"
+  - "migrations/**"
+  - "deploy/**"
+  - ".github/workflows/**"
+  - ".github/risk-tiers.yml"
+
+low:
+  - "docs/**"
+  - "**/*.md"
+  - "public/**"
+  - "**/*.test.*"
+  - "**/*.spec.*"

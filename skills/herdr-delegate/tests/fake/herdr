@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+: "${FAKE_DIR:?FAKE_DIR is not set}"
+mkdir -p "$FAKE_DIR"
+
+{
+  first=1
+  for arg in "$@"; do
+    arg="${arg//$'\n'/\\n}"
+    if (( first )); then
+      printf '%s' "$arg"
+      first=0
+    else
+      printf '\t%s' "$arg"
+    fi
+  done
+  printf '\n'
+} >> "$FAKE_DIR/calls.log"
+
+cmd="${1:-}"
+shift || true
+
+agent() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    get)
+      local name="${1:-}" dir="$FAKE_DIR/agents/${1:-}"
+      [[ -d "$dir" ]] || exit 1
+      local status
+      status="$(cat "$dir/status" 2>/dev/null || echo idle)"
+      jq -nc --arg status "$status" --arg session "$dir/session.jsonl" \
+        '{result:{agent:{agent_status:$status,pane_id:"p1",tab_id:"t1",agent_session:{value:$session}}}}'
+      ;;
+    start)
+      local name="${1:-}"
+      shift || true
+      local dir="$FAKE_DIR/agents/$name"
+      mkdir -p "$dir"
+      printf 'idle' > "$dir/status"
+      : > "$dir/session.jsonl"
+      printf 'agent start %s %s\n' "$name" "$*" > "$dir/start.args"
+      ;;
+    prompt)
+      local name="${1:-}" text="${2:-}"
+      shift 2 || true
+      local dir="$FAKE_DIR/agents/$name"
+      mkdir -p "$dir"
+      printf '%s' "$text" > "$dir/last-prompt"
+      local count=0
+      [[ -f "$dir/prompt-count" ]] && count="$(<"$dir/prompt-count")"
+      count=$((count + 1))
+      printf '%s' "$count" > "$dir/prompt-count"
+      if [[ -x "$FAKE_DIR/on-prompt" ]]; then
+        local rc=0
+        "$FAKE_DIR/on-prompt" "$name" "$dir/session.jsonl" "$count" || rc=$?
+        exit "$rc"
+      fi
+      ;;
+    wait) ;;
+    read) printf 'SCREEN TAIL\n' ;;
+    *) ;;
+  esac
+}
+
+pane() {
+  local sub="${1:-}"
+  case "$sub" in
+    get) printf '%s\n' '{"result":{"pane":{"pane_id":"p1","tab_id":"w1:t1","workspace_id":"w1"}}}' ;;
+    split) printf '%s\n' '{"result":{"pane":{"pane_id":"p2"}}}' ;;
+    list) printf '%s\n' '{"result":{"panes":[{"pane_id":"p1","tab_id":"w1:t1"}]}}' ;;
+    read) printf 'SCREEN TAIL\n' ;;
+    close) ;;
+    *) ;;
+  esac
+}
+
+tab() {
+  local sub="${1:-}"
+  case "$sub" in
+    create) printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"p1"}}}' ;;
+    get) printf '%s\n' '{"result":{"tab":{"pane_count":1}}}' ;;
+    *) ;;
+  esac
+}
+
+case "$cmd" in
+  agent) agent "$@" ;;
+  pane) pane "$@" ;;
+  tab) tab "$@" ;;
+  *) ;;
+esac

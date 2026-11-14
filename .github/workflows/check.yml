@@ -1,0 +1,27 @@
+name: Check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install bash coreutils jq
+      - run: bash --version | head -n 1
+      - run: bash skills/herdr-delegate/tests/run.sh
+      - run: node --test skills/pr-risk/tests/

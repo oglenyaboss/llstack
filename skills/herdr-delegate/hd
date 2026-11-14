@@ -1,0 +1,530 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  echo "hd: needs bash 4.4+, found $BASH_VERSION (macOS: brew install bash)" >&2
+  exit 1
+fi
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_HARNESS="${HD_HARNESS:-pi}"
+DEFAULT_MODEL="${HD_MODEL:-}"
+DEFAULT_THINKING="${HD_THINKING:-}"
+RUN_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-delegate"
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+CODEX_SESSIONS="$HOME/.codex/sessions"
+JOURNAL="$RUN_ROOT/journal.jsonl"
+CHECK_TIMEOUT="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+
+usage() {
+  cat <<'EOF'
+hd spawn <name> <role> [--agent pi|codex] [--cwd DIR] [--model M] [--thinking T] [--session FILE]
+hd ask <name> <brief | @file> [--timeout MS]
+hd wait <name> [--timeout MS]
+hd result <name>
+hd diff <name> [git diff args]
+hd peek <name> [lines]
+hd ls
+hd stop <name>
+hd resume <name> [--cwd DIR] [--model M] [--thinking T]
+hd note <name> <text>
+
+roles: sidekick worker scout researcher
+EOF
+  exit 2
+}
+
+die() { echo "hd: $*" >&2; exit 1; }
+
+[[ "${HERDR_ENV:-}" == 1 ]] || die "not inside Herdr (HERDR_ENV!=1)"
+
+digest() {
+  if command -v md5sum >/dev/null 2>&1; then md5sum; else md5 -q; fi
+}
+
+LEAD_TAG="$(printf %s "$HERDR_PANE_ID" | digest | cut -c1-4)"
+
+target() { echo "$1-$LEAD_TAG"; }
+
+run_dir() {
+  local d="$RUN_ROOT/${HERDR_PANE_ID//[^A-Za-z0-9]/_}"
+  mkdir -p "$d"
+  echo "$d"
+}
+
+role_tools() {
+  case "$1" in
+    sidekick|worker) echo "read,grep,find,ls,bash,edit,write,tool_search" ;;
+    scout) echo "read,grep,find,ls,bash,write,tool_search" ;;
+    researcher) echo "read,write,web_search,fetch_content,get_search_content,tool_search" ;;
+    *) die "unknown role: $1" ;;
+  esac
+}
+
+agent_json() { herdr agent get "$(target "$1")"; }
+agent_status() { agent_json "$1" | jq -r .result.agent.agent_status; }
+agent_kind() { cat "$(run_dir)/$1.agent" 2>/dev/null || echo pi; }
+agent_model() { cat "$(run_dir)/$1.model" 2>/dev/null || echo "$(agent_kind "$1") default"; }
+
+agent_session() {
+  if [[ "$(agent_kind "$1")" == codex ]]; then codex_session "$1"; return; fi
+  agent_json "$1" | jq -r '.result.agent.agent_session.value // empty'
+}
+
+codex_session() {
+  local rd f=""; rd="$(run_dir)"
+  [[ -f "$rd/$1.rollout" ]] && f="$(<"$rd/$1.rollout")"
+  if [[ ! -f "$f" && -f "$rd/$1.out" && -d "$CODEX_SESSIONS" ]]; then
+    f="$(find "$CODEX_SESSIONS" -name 'rollout-*.jsonl' -newer "$rd/$1.agent" \
+      -exec grep -lF -- "$(<"$rd/$1.out")" {} + | head -n 1 || true)"
+    [[ -n "$f" ]] && echo "$f" > "$rd/$1.rollout"
+  fi
+  echo "$f"
+}
+
+agent_ctx() {
+  local session; session="$(agent_session "$1")"
+  [[ -f "$session" ]] || return 0
+  if [[ "$(agent_kind "$1")" == codex ]]; then
+    jq -rs '[.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.last_token_usage | select(.)]
+      | last | select(.) | "\((.input_tokens / 1000) | floor)k"' "$session"
+    return
+  fi
+  jq -rs '[.[] | select(.type == "message" and .message.role == "assistant") | .message.usage | select(.)]
+    | last | select(.) | "\(((.input + .cacheRead + .cacheWrite) / 1000) | floor)k"' "$session"
+}
+
+project_context_args() {
+  local dir="$1" found=() f
+  while :; do
+    for f in AGENTS.override.md AGENTS.md AGENTS.MD CLAUDE.md CLAUDE.MD; do
+      if [[ -f "$dir/$f" ]]; then found=("$dir/$f" "${found[@]}"); break; fi
+    done
+    [[ "$dir" == / ]] && break
+    dir="$(dirname "$dir")"
+  done
+  for f in "${found[@]}"; do printf '%s\0' --append-system-prompt "$f"; done
+}
+
+agent_cwd() { cat "$(run_dir)/$1.cwd" 2>/dev/null || echo "$PWD"; }
+
+# ponytail: git-ignored files (e.g. a gitignored lab/) are outside the snapshot; snapshot them separately if needed
+snapshot_tree() {
+  local dir="$1" idx
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  idx="$(mktemp)"
+  cp "$(git -C "$dir" rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null || rm -f "$idx"
+  GIT_INDEX_FILE="$idx" git -C "$dir" add -A >/dev/null
+  GIT_INDEX_FILE="$idx" git -C "$dir" write-tree
+  rm -f "$idx"
+}
+
+place_pane() {
+  local rd="$1" cwd="$2" tab anchor count dir res ws
+  tab="$(cat "$rd/tab" 2>/dev/null || true)"
+  if [[ -n "$tab" ]] && count="$(herdr tab get "$tab" 2>/dev/null | jq -r .result.tab.pane_count)"; then
+    anchor="$(cat "$rd/last-pane" 2>/dev/null || true)"
+    if [[ "$(herdr pane get "$anchor" 2>/dev/null | jq -r .result.pane.tab_id)" != "$tab" ]]; then
+      anchor="$(herdr pane list --workspace "${tab%%:*}" | jq -r --arg t "$tab" '[.result.panes[] | select(.tab_id == $t)] | last | .pane_id')"
+    fi
+    dir=right; (( count % 2 == 0 )) && dir=down
+    herdr pane split --pane "$anchor" --direction "$dir" --cwd "$cwd" --no-focus | jq -r .result.pane.pane_id
+    return
+  fi
+  ws="${HERDR_WORKSPACE_ID:-$(herdr pane get "$HERDR_PANE_ID" | jq -r .result.pane.workspace_id)}"
+  res="$(herdr tab create --workspace "$ws" --cwd "$cwd" --label "agents $(basename "$PWD")" --no-focus)"
+  jq -r .result.tab.tab_id <<<"$res" > "$rd/tab"
+  jq -r .result.root_pane.pane_id <<<"$res"
+}
+
+cmd_spawn() {
+  local name="${1:-}" role="${2:-}"; shift 2 || usage
+  [[ -n "$name" && -n "$role" ]] || usage
+  local cwd="$PWD" model="" thinking="" session="" kind="$DEFAULT_HARNESS"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent) kind="$2"; shift 2 ;;
+      --cwd) cwd="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --thinking) thinking="$2"; shift 2 ;;
+      --session) session="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  cwd="$(cd "$cwd" 2>/dev/null && pwd)" || die "no such directory: $cwd"
+  case "$kind" in
+    pi) ;;
+    codex) spawn_codex "$name" "$role" "$cwd" "$model" "$thinking" "$session"; return ;;
+    *) die "unknown agent: $kind (pi or codex)" ;;
+  esac
+  model="${model:-$DEFAULT_MODEL}"
+  thinking="${thinking:-$DEFAULT_THINKING}"
+  local session_args=() model_args=()
+  [[ -n "$session" ]] && session_args=(--session "$session")
+  [[ -n "$model" ]] && model_args+=(--model "$model")
+  [[ -n "$thinking" ]] && model_args+=(--thinking "$thinking")
+  local role_file="$SKILL_DIR/roles/$role.md" tools
+  [[ -f "$role_file" ]] || die "no role file: $role_file"
+  tools="$(role_tools "$role")"
+
+  local ext_args=(--no-extensions -e builtin:mcp -e builtin:tool-search) ext ctx_args=() exts=()
+  [[ -f "$PI_AGENT_DIR/extensions/herdr-agent-state.ts" ]] && ext_args+=(-e "$PI_AGENT_DIR/extensions/herdr-agent-state.ts")
+  IFS=: read -ra exts <<<"${HD_PI_EXTENSIONS:-}"
+  for ext in "${exts[@]}"; do ext_args+=(-e "$ext"); done
+  mapfile -d '' ctx_args < <(project_context_args "$(cd "$cwd" && pwd)")
+
+  local rd pane
+  rd="$(run_dir)"
+  pane="$(place_pane "$rd" "$cwd")"
+  record_spawn "$rd" "$pane" "$name" "$role" pi "$model" "$cwd"
+
+  start_agent "$name" pi "$pane" \
+    "${ext_args[@]}" "${session_args[@]}" --no-context-files --no-skills --no-prompt-templates "${ctx_args[@]}" \
+    "${model_args[@]}" --tools "$tools" \
+    --append-system-prompt "$role_file" \
+    --append-system-prompt "$SKILL_DIR/roles/_envelope.md"
+  echo "spawned $name role=$role pane=$pane model=${model:-pi default} cwd=$cwd"
+}
+
+record_spawn() {
+  local rd="$1" pane="$2" name="$3" role="$4" kind="$5" model="$6" cwd="$7"
+  echo "$pane" > "$rd/last-pane"
+  echo "$role" > "$rd/$name.role"
+  echo "$kind" > "$rd/$name.agent"
+  if [[ -n "$model" ]]; then echo "$model" > "$rd/$name.model"; else rm -f "$rd/$name.model"; fi
+  echo "$cwd" > "$rd/$name.cwd"
+}
+
+start_agent() {
+  local name="$1" kind="$2" pane="$3"; shift 3
+  if ! herdr agent start "$name-$LEAD_TAG" --kind "$kind" --pane "$pane" --timeout 60000 -- "$@" >/dev/null; then
+    echo "spawn: agent not ready; screen:" >&2
+    herdr pane read "$pane" --source visible >&2 || true
+    exit 1
+  fi
+}
+
+# ponytail: codex runs scouts only (the skeptic); a codex worker needs its sandbox and Scope review designed first
+spawn_codex() {
+  local name="$1" role="$2" cwd="$3" model="$4" thinking="${5:-high}" session="$6"
+  [[ "$role" == scout ]] || die "codex agents run as scout only"
+  cwd="$(cd "$cwd" && pwd)"
+  local rd pane args=() instructions
+  rd="$(run_dir)"
+  if [[ -n "$session" ]]; then
+    args=(resume "$(jq -r 'select(.type == "session_meta") | .payload.id' "$session" | head -n 1)")
+  fi
+  instructions="$(cat "$SKILL_DIR/roles/$role.md" "$SKILL_DIR/roles/_envelope.md" | jq -Rs .)"
+  args+=(-C "$cwd" -s workspace-write --add-dir "$rd" -a never
+    -c "model_reasoning_effort=\"$thinking\"" -c 'project_doc_fallback_filenames=["CLAUDE.md"]'
+    -c "developer_instructions=$instructions")
+  [[ -n "$model" ]] && args+=(-m "$model")
+
+  pane="$(place_pane "$rd" "$cwd")"
+  record_spawn "$rd" "$pane" "$name" "$role" codex "$model" "$cwd"
+  if [[ -n "$session" ]]; then echo "$session" > "$rd/$name.rollout"; else rm -f "$rd/$name.rollout" "$rd/$name.out"; fi
+  start_agent "$name" codex "$pane" "${args[@]}"
+  echo "spawned $name role=$role agent=codex pane=$pane model=$(agent_model "$name") thinking=$thinking cwd=$cwd"
+}
+
+new_entries() {
+  local name="$1" rd session mark_file mark_session offset
+  rd="$(run_dir)"
+  session="$(agent_session "$name")"
+  [[ -n "$session" && -f "$session" ]] || die "no session file for $name"
+  mark_file="$rd/$name.mark"
+  offset=0
+  if [[ -f "$mark_file" ]]; then
+    read -r mark_session offset < "$mark_file"
+    [[ "$mark_session" == "$session" ]] || offset=0
+  fi
+  tail -n "+$((offset + 1))" "$session"
+}
+
+provider_error() {
+  if [[ "$(agent_kind "$1")" == codex ]]; then
+    new_entries "$1" | jq -rs '
+      [.[] | select(.type == "event_msg" and (.payload.type == "error" or .payload.type == "task_complete")) | .payload]
+      | last | select(.type == "error") | .message // "unknown error"'
+    return
+  fi
+  new_entries "$1" | jq -rs '
+    [.[] | select(.type == "message" and .message.role == "assistant")] | last
+    | select(.message.stopReason == "error") | .message.errorMessage // "unknown error"'
+}
+
+reply_text() {
+  if [[ "$(agent_kind "$1")" == codex ]]; then
+    new_entries "$1" | jq -rs '
+      [.[] | select(.type == "event_msg" and .payload.type == "task_complete") | .payload.last_agent_message // empty]
+      | last // empty'
+    return
+  fi
+  new_entries "$1" | jq -rs '
+    [.[] | select(.type == "message" and .message.role == "assistant")]
+    | map((.message.content // []) | map(select(.type == "text") | .text) | join("\n"))
+    | map(select(length > 0)) | last // empty'
+}
+
+print_result() {
+  local name="$1" text
+  text="$(reply_text "$name")"
+  if [[ -z "$text" ]]; then
+    echo "STATUS: no_reply"
+    echo "--- screen tail:"
+    herdr agent read "$(target "$name")" --source recent-unwrapped --lines 40
+    return
+  fi
+  printf '%s\n' "$text"
+  echo "ctx=$(agent_ctx "$name")"
+}
+
+cmd_ask() {
+  local name="${1:-}" brief="${2:-}"; shift 2 || usage
+  [[ -n "$name" && -n "$brief" ]] || usage
+  local timeout=3000000
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout) timeout="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  if [[ "$brief" == @* ]]; then
+    brief="$(cat "${brief#@}")"
+  fi
+  local check
+  check="$(sed -n '/^Check:/{s/^Check:[[:space:]]*`\([^`]*\)`.*/\1/p;q;}' <<<"$brief")"
+  [[ -z "$check" || -n "$CHECK_TIMEOUT" ]] || die "Check needs timeout or gtimeout (macOS: brew install coreutils)"
+
+  if [[ "$name" == sk ]] && ! agent_json sk >/dev/null 2>&1; then
+    cmd_spawn sk sidekick
+  fi
+
+  local status
+  status="$(agent_status "$name")"
+  [[ "$status" == idle || "$status" == done ]] || die "$name is $status, not ready for input"
+
+  local rd role seq out session
+  rd="$(run_dir)"
+  role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
+  seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
+  out="$rd/$name-$(printf '%02d' "$seq").md"
+  session="$(agent_session "$name")"
+  rm -f "$rd/$name.retried"
+  echo "$out" > "$rd/$name.out"
+  printf '%s\n' "$brief" > "${out%.md}.brief"
+  printf '%s' "$check" > "$rd/$name.check"
+  sed -n '/^Scope:/{p;q;}' <<<"$brief" | grep -o '`[^`]*`' | tr -d '`' | sed 's|^\./||' > "$rd/$name.scope" || true
+  snapshot_tree "$(agent_cwd "$name")" > "$rd/$name.base" || rm -f "$rd/$name.base"
+  if [[ -f "$session" ]]; then
+    echo "$session $(wc -l < "$session")" > "$rd/$name.mark"
+  else
+    echo "$session 0" > "$rd/$name.mark"
+  fi
+
+  local msg
+  msg="$brief
+
+---
+OUTPUT_FILE: $out
+Write the payload your role defines to OUTPUT_FILE. End your turn with the report envelope from your role instructions."
+
+  local rc=0 res
+  res="$(herdr agent prompt "$(target "$name")" "$msg" --wait --timeout "$timeout" 2>&1)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if grep -q timeout <<<"$res"; then
+      echo "STATUS: still_working"
+      echo "$name has not finished; continue with: hd wait $name"
+      exit 0
+    fi
+    echo "$res" >&2
+    exit "$rc"
+  fi
+  finish "$name" "$timeout"
+}
+
+finish() {
+  local name="$1" timeout="$2" status err rd
+  status="$(agent_status "$name")"
+  if [[ "$status" == blocked ]]; then
+    echo "STATUS: blocked_ui"
+    echo "--- screen tail:"
+    herdr agent read "$(target "$name")" --source recent-unwrapped --lines 40
+    return
+  fi
+  err="$(provider_error "$name")"
+  if [[ -n "$err" ]]; then
+    rd="$(run_dir)"
+    if [[ -f "$rd/$name.retried" ]]; then
+      echo "STATUS: provider_error"
+      echo "$err (already retried once; check the working tree, then re-ask or re-brief)"
+      return
+    fi
+    touch "$rd/$name.retried"
+    if ! herdr agent prompt "$(target "$name")" "Previous turn died on a provider error ($err). Continue the same task from where you stopped, then end with the report envelope." \
+        --wait --timeout "$timeout" >/dev/null 2>&1; then
+      echo "STATUS: still_working"
+      echo "$name was retried after a provider error; continue with: hd wait $name"
+      exit 0
+    fi
+    finish "$name" "$timeout"
+    return
+  fi
+  print_result "$name"
+  run_check "$name"
+  run_scope "$name"
+  journal_ask "$name"
+}
+
+run_check() {
+  local name="$1" check out rc=0 rd
+  rd="$(run_dir)"
+  rm -f "$rd/$name.check-exit"
+  check="$(cat "$rd/$name.check" 2>/dev/null || true)"
+  [[ -n "$check" ]] || return 0
+  out="$(cd "$(agent_cwd "$name")" && "$CHECK_TIMEOUT" 600 bash -c "$check" 2>&1)" || rc=$?
+  echo "$rc" > "$rd/$name.check-exit"
+  printf -- '--- check: %s\nexit=%s\n' "$check" "$rc"
+  tail -n 20 <<<"$out"
+}
+
+run_scope() {
+  local name="$1" rd base cwd f p inside changed=() scope=() outside=()
+  rd="$(run_dir)"
+  rm -f "$rd/$name.changed" "$rd/$name.outside"
+  base="$(cat "$rd/$name.base" 2>/dev/null || true)"
+  [[ -n "$base" ]] || return 0
+  cwd="$(agent_cwd "$name")"
+  mapfile -t changed < <(git -C "$cwd" diff --name-only "$base" "$(snapshot_tree "$cwd")")
+  printf '%s\n' "${changed[@]}" | sed '/^$/d' > "$rd/$name.changed"
+  [[ -s "$rd/$name.scope" ]] || return 0
+  mapfile -t scope < "$rd/$name.scope"
+  for f in "${changed[@]}"; do
+    inside=0
+    for p in "${scope[@]}"; do
+      if [[ "$f" == $p || ( "$p" == */ && "$f" == "$p"* ) ]]; then inside=1; break; fi
+    done
+    (( inside )) || outside+=("$f")
+  done
+  printf '%s\n' "${outside[@]}" | sed '/^$/d' > "$rd/$name.outside"
+  printf -- '--- scope: %s changed, %s outside Scope\n' "${#changed[@]}" "${#outside[@]}"
+  [[ ${#outside[@]} -eq 0 ]] || printf '%s\n' "${outside[@]}"
+}
+
+journal_lines() { if [[ -f "$1" ]]; then jq -Rn '[inputs]' < "$1"; else echo '[]'; fi; }
+
+journal_ask() {
+  local name="$1" rd out cwd
+  rd="$(run_dir)"
+  out="$(cat "$rd/$name.out" 2>/dev/null || true)"
+  cwd="$(agent_cwd "$name")"
+  jq -nc --arg ts "$(date +%Y-%m-%dT%H:%M:%S%z)" --arg project "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")" \
+    --arg name "$name" --arg role "$(cat "$rd/$name.role" 2>/dev/null || echo unknown)" \
+    --arg agent "$(agent_kind "$name")" --arg model "$(agent_model "$name")" \
+    --arg brief "${out%.md}.brief" --arg payload "$out" \
+    --arg status "$(reply_text "$name" | grep -m1 -E 'STATUS' || true)" \
+    --arg check "$(cat "$rd/$name.check" 2>/dev/null || true)" \
+    --arg check_exit "$(cat "$rd/$name.check-exit" 2>/dev/null || true)" \
+    --argjson scope "$(journal_lines "$rd/$name.scope")" \
+    --argjson changed "$(journal_lines "$rd/$name.changed")" \
+    --argjson outside "$(journal_lines "$rd/$name.outside")" \
+    --arg ctx "$(agent_ctx "$name")" \
+    '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
+      status: $status, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside,
+      ctx: $ctx, brief: $brief, payload: $payload}' >> "$JOURNAL"
+}
+
+cmd_note() {
+  local name="${1:-}" text="${2:-}"
+  [[ -n "$name" && -n "$text" ]] || usage
+  local rd out cwd
+  rd="$(run_dir)"
+  out="$(cat "$rd/$name.out" 2>/dev/null || true)"
+  cwd="$(agent_cwd "$name")"
+  jq -nc --arg ts "$(date +%Y-%m-%dT%H:%M:%S%z)" --arg project "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")" \
+    --arg name "$name" --arg role "$(cat "$rd/$name.role" 2>/dev/null || echo unknown)" \
+    --arg agent "$(agent_kind "$name")" --arg model "$(agent_model "$name")" \
+    --arg brief "${out:+${out%.md}.brief}" --arg text "$text" \
+    '{event: "note", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
+      brief: $brief, text: $text}' >> "$JOURNAL"
+  echo "noted in $JOURNAL"
+}
+
+cmd_wait() {
+  local name="${1:-}"; shift || usage
+  local timeout=3000000
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout) timeout="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  if ! herdr agent wait "$(target "$name")" --timeout "$timeout" >/dev/null 2>&1; then
+    echo "STATUS: still_working"
+    exit 0
+  fi
+  finish "$name" "$timeout"
+}
+
+cmd_diff() {
+  local name="${1:-}"; [[ -n "$name" ]] || usage; shift
+  local rd base cwd; rd="$(run_dir)"
+  base="$(cat "$rd/$name.base" 2>/dev/null || true)"
+  [[ -n "$base" ]] || die "no snapshot for $name (cwd is not a git tree)"
+  cwd="$(agent_cwd "$name")"
+  git -C "$cwd" diff "$@" "$base" "$(snapshot_tree "$cwd")"
+}
+
+cmd_peek() {
+  local name="${1:-}"; [[ -n "$name" ]] || usage
+  herdr agent read "$(target "$name")" --source recent-unwrapped --lines "${2:-40}"
+}
+
+cmd_ls() {
+  local rd; rd="$(run_dir)"
+  local name
+  for f in "$rd"/*.role; do
+    [[ -e "$f" ]] || continue
+    name="$(basename "$f" .role)"
+    if agent_json "$name" >/dev/null 2>&1; then
+      echo "$name $(cat "$f") $(agent_status "$name") $(agent_json "$name" | jq -r .result.agent.pane_id) ctx=$(agent_ctx "$name")"
+    fi
+  done
+}
+
+cmd_stop() {
+  local name="${1:-}"; [[ -n "$name" ]] || usage
+  local rd pane; rd="$(run_dir)"
+  pane="$(agent_json "$name" | jq -r .result.agent.pane_id)"
+  agent_session "$name" > "$rd/$name.session"
+  herdr pane close "$pane" >/dev/null
+  rm -f "$rd/$name.mark"
+  echo "stopped $name ($pane); bring back with: hd resume $name"
+}
+
+cmd_resume() {
+  local name="${1:-}"; [[ -n "$name" ]] || usage
+  shift
+  local rd session; rd="$(run_dir)"
+  session="$(cat "$rd/$name.session" 2>/dev/null || true)"
+  [[ -f "$session" && -f "$rd/$name.role" ]] || die "no stopped session for $name"
+  local saved=()
+  [[ -f "$rd/$name.cwd" ]] && saved+=(--cwd "$(<"$rd/$name.cwd")")
+  [[ -f "$rd/$name.model" ]] && saved+=(--model "$(<"$rd/$name.model")")
+  [[ -f "$rd/$name.agent" ]] && saved+=(--agent "$(<"$rd/$name.agent")")
+  cmd_spawn "$name" "$(cat "$rd/$name.role")" --session "$session" "${saved[@]}" "$@"
+}
+
+case "${1:-}" in
+  spawn) shift; cmd_spawn "$@" ;;
+  ask) shift; cmd_ask "$@" ;;
+  wait) shift; cmd_wait "$@" ;;
+  result) shift; print_result "${1:?}" ;;
+  diff) shift; cmd_diff "$@" ;;
+  peek) shift; cmd_peek "$@" ;;
+  ls) cmd_ls ;;
+  stop) shift; cmd_stop "$@" ;;
+  resume) shift; cmd_resume "$@" ;;
+  note) shift; cmd_note "$@" ;;
+  *) usage ;;
+esac
