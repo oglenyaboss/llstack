@@ -696,6 +696,7 @@ SCRIPT
   cwd_value="$(jq -r 'index("--cwd") as $i | .[$i + 1]' <<< "$args")"
   assert_eq "$PWD" "$cwd_value" "cwd"
   envfile="$(cat "$FAKE_DIR/zcode.env")"
+  state="$(cd "$state" && pwd -P)"
   assert_contains "$envfile" "HOME=$state/home" "private HOME"
   assert_contains "$envfile" "ZCODE_SESSION_DB_PATH=$state/db/db.sqlite" "private session DB"
   assert_contains "$envfile" "ZCODE_LOG_DIR=$state/log" "private log dir"
