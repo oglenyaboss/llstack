@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPORT_TIMEOUT="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+
+invalid() {
+  printf 'zcode-hook: invalid hook input\n' >&2
+  exit 1
+}
+
+[[ $# -eq 1 && -n "${1:-}" ]] || invalid
+mkdir -p -- "$1" 2>/dev/null || invalid
+state_dir="$(cd -- "$1" 2>/dev/null && pwd -P)" || invalid
+events="$state_dir/events.jsonl"
+context="$state_dir/context.md"
+
+raw="$(cat)" || invalid
+normalized="$(jq -c '
+  def canonical($snake; $name):
+    if has($name) then del(.[$snake])
+    elif has($snake) then (.[$name] = .[$snake] | del(.[$snake]))
+    else . end;
+  canonical("hook_event_name"; "hookEventName")
+  | canonical("session_id"; "sessionId")
+  | canonical("turn_id"; "turnId")
+  | canonical("trace_id"; "traceId")
+' <<<"$raw" 2>/dev/null)" || invalid
+event="$(jq -er '.hookEventName | strings' <<<"$normalized" 2>/dev/null)" || invalid
+case "$event" in
+  SessionStart|UserPromptSubmit|PreToolUse|PermissionRequest|PostToolUse|PostToolUseFailure|Stop) ;;
+  *) invalid ;;
+esac
+session="$(jq -er '.sessionId | strings | select(length > 0)' <<<"$normalized" 2>/dev/null)" || invalid
+
+report_state() {
+  local state="$1" bin="${HERDR_BIN_PATH:-herdr}"
+  [[ "${HERDR_ENV:-}" == 1 && -n "${HERDR_PANE_ID:-}" ]] || return 0
+  if [[ -n "$REPORT_TIMEOUT" ]]; then
+    "$REPORT_TIMEOUT" 2 "$bin" pane report-agent \
+      --source llstack:zcode --agent zcode --state "$state" "$HERDR_PANE_ID" \
+      --agent-session-id "$session" --agent-session-path "$events" >/dev/null 2>&1 || true
+  else
+    "$bin" pane report-agent \
+      --source llstack:zcode --agent zcode --state "$state" "$HERDR_PANE_ID" \
+      --agent-session-id "$session" --agent-session-path "$events" >/dev/null 2>&1 || true
+  fi
+}
+
+case "$event" in
+  SessionStart)
+    printf '%s\n' "$normalized" >> "$events"
+    if [[ -f "$context" ]]; then
+      jq -n --rawfile ctx "$context" \
+        '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}' 2>/dev/null || true
+    fi
+    report_state idle
+    ;;
+  UserPromptSubmit)
+    printf '%s\n' "$normalized" >> "$events"
+    report_state working
+    ;;
+  Stop)
+    printf '%s\n' "$normalized" >> "$events"
+    report_state idle
+    ;;
+  PermissionRequest)
+    report_state blocked
+    ;;
+  PreToolUse|PostToolUse|PostToolUseFailure)
+    report_state working
+    ;;
+esac

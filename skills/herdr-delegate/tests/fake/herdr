@@ -21,17 +21,79 @@ mkdir -p "$FAKE_DIR"
 cmd="${1:-}"
 shift || true
 
+pane_dir() { printf '%s/panes/%s' "$FAKE_DIR" "$1"; }
+
+pane_target() {
+  local target="$1" pane
+  [[ -d "$FAKE_DIR/panes/$target" ]] && { printf '%s\n' "$target"; return 0; }
+  [[ -f "$FAKE_DIR/aliases/$target" ]] || return 1
+  pane="$(<"$FAKE_DIR/aliases/$target")"
+  [[ -d "$FAKE_DIR/panes/$pane" ]] || return 1
+  printf '%s\n' "$pane"
+}
+
+pane_state() {
+  local pane="$1" dir
+  dir="$(pane_dir "$pane")"
+  [[ -d "$dir" && ! -f "$dir/closed" && ! -f "$dir/released" && -f "$dir/reported" ]] || return 1
+  cat "$dir/status" 2>/dev/null || printf 'idle'
+}
+
+pane_agent() { cat "$(pane_dir "$1")/agent" 2>/dev/null || printf 'zcode'; }
+
+pane_read() {
+  local dir screen
+  dir="$(pane_dir "$1")"
+  screen="$dir/screen"
+  if [[ -f "$screen" ]]; then cat "$screen"; else printf 'SCREEN TAIL\n'; fi
+}
+
+report_pane() {
+  local pane="$1" source="$2" agent="$3" state="$4" session_id="$5" session_path="$6" dir
+  dir="$(pane_dir "$pane")"
+  mkdir -p "$dir"
+  printf '%s\n' "$state" > "$dir/status"
+  printf '%s\n' "$agent" > "$dir/agent"
+  printf '%s\n' "$source" > "$dir/source"
+  [[ -n "$session_id" ]] && printf '%s\n' "$session_id" > "$dir/session-id"
+  [[ -n "$session_path" ]] && printf '%s\n' "$session_path" > "$dir/session-path"
+  jq -nc --arg source "$source" --arg agent "$agent" --arg state "$state" \
+    --arg session "$session_id" --arg path "$session_path" \
+    '{source:$source,agent:$agent,state:$state,session_id:$session,session_path:$path}' > "$dir/report.json"
+  : > "$dir/reported"
+}
+
+agent_get() {
+  local target="$1" dir status
+  if [[ -x "$FAKE_DIR/on-agent-get" ]]; then
+    "$FAKE_DIR/on-agent-get" "$target"
+  fi
+  if [[ -d "$FAKE_DIR/agents/$target" ]]; then
+    dir="$FAKE_DIR/agents/$target"
+    status="$(cat "$dir/status" 2>/dev/null || echo idle)"
+    jq -nc --arg status "$status" --arg session "$dir/session.jsonl" \
+      '{result:{agent:{agent:"pi",agent_status:$status,pane_id:"p1",tab_id:"t1",agent_session:{value:$session}}}}'
+    return 0
+  fi
+  local pane
+  pane="$(pane_target "$target")" || {
+    printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "$target" >&2
+    return 1
+  }
+  status="$(pane_state "$pane")" || {
+    printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "$target" >&2
+    return 1
+  }
+  jq -nc --arg status "$status" --arg pane "$pane" --arg agent "$(pane_agent "$pane")" \
+    '{result:{agent:{agent:$agent,agent_status:$status,pane_id:$pane,tab_id:"w1:t1"}}}'
+}
+
 agent() {
   local sub="${1:-}"
   shift || true
   case "$sub" in
     get)
-      local name="${1:-}" dir="$FAKE_DIR/agents/${1:-}"
-      [[ -d "$dir" ]] || exit 1
-      local status
-      status="$(cat "$dir/status" 2>/dev/null || echo idle)"
-      jq -nc --arg status "$status" --arg session "$dir/session.jsonl" \
-        '{result:{agent:{agent_status:$status,pane_id:"p1",tab_id:"t1",agent_session:{value:$session}}}}'
+      agent_get "${1:-}"
       ;;
     start)
       local name="${1:-}"
@@ -43,10 +105,13 @@ agent() {
       printf 'agent start %s %s\n' "$name" "$*" > "$dir/start.args"
       ;;
     prompt)
-      local name="${1:-}" text="${2:-}"
+      local target="${1:-}" text="${2:-}"
       shift 2 || true
-      local dir="$FAKE_DIR/agents/$name"
-      mkdir -p "$dir"
+      if [[ ! -d "$FAKE_DIR/agents/$target" ]]; then
+        printf '{"error":{"code":"agent_not_ready","message":"agent target %s is not an active named agent"}}\n' "$target" >&2
+        exit 1
+      fi
+      local dir="$FAKE_DIR/agents/$target"
       printf '%s' "$text" > "$dir/last-prompt"
       local count=0
       [[ -f "$dir/prompt-count" ]] && count="$(<"$dir/prompt-count")"
@@ -54,24 +119,173 @@ agent() {
       printf '%s' "$count" > "$dir/prompt-count"
       if [[ -x "$FAKE_DIR/on-prompt" ]]; then
         local rc=0
-        "$FAKE_DIR/on-prompt" "$name" "$dir/session.jsonl" "$count" || rc=$?
+        "$FAKE_DIR/on-prompt" "$target" "$dir/session.jsonl" "$count" || rc=$?
         exit "$rc"
       fi
       ;;
     wait) ;;
-    read) printf 'SCREEN TAIL\n' ;;
+    read)
+      local target="${1:-}" pane
+      if [[ ! -d "$FAKE_DIR/agents/$target" ]] && pane="$(pane_target "$target")"; then
+        pane_read "$pane"
+      else
+        printf 'SCREEN TAIL\n'
+      fi
+      ;;
+    rename)
+      local target="${1:-}" name="${2:-}" pane
+      if pane="$(pane_target "$target")"; then
+        mkdir -p "$FAKE_DIR/aliases"
+        printf '%s\n' "$pane" > "$FAKE_DIR/aliases/$name"
+        printf '%s\n' "$name" > "$(pane_dir "$pane")/alias"
+      fi
+      ;;
     *) ;;
   esac
 }
 
 pane() {
   local sub="${1:-}"
+  shift || true
   case "$sub" in
-    get) printf '%s\n' '{"result":{"pane":{"pane_id":"p1","tab_id":"w1:t1","workspace_id":"w1"}}}' ;;
-    split) printf '%s\n' '{"result":{"pane":{"pane_id":"p2"}}}' ;;
-    list) printf '%s\n' '{"result":{"panes":[{"pane_id":"p1","tab_id":"w1:t1"}]}}' ;;
-    read) printf 'SCREEN TAIL\n' ;;
-    close) ;;
+    get)
+      local pane="${1:-}" dir
+      dir="$(pane_dir "$pane")"
+      [[ "$pane" == p1 && ! -d "$dir" ]] && mkdir -p "$dir"
+      [[ -d "$dir" && ! -f "$dir/closed" ]] || { printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$pane" >&2; exit 1; }
+      jq -nc --arg pane "$pane" '{result:{pane:{pane_id:$pane,tab_id:"w1:t1",workspace_id:"w1"}}}'
+      ;;
+    split)
+      local anchor="" seq dir
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --pane) anchor="$2"; shift 2 ;;
+          --direction|--cwd|--ratio|--env|--right-click) shift 2 ;;
+          --no-focus|--focus) shift ;;
+          *) shift ;;
+        esac
+      done
+      seq="$(cat "$FAKE_DIR/pane-seq" 2>/dev/null || echo 1)"
+      seq=$((seq + 1))
+      printf '%s' "$seq" > "$FAKE_DIR/pane-seq"
+      dir="$(pane_dir "p$seq")"
+      mkdir -p "$dir"
+      jq -nc --arg pane "p$seq" '{result:{pane:{pane_id:$pane,tab_id:"w1:t1"}}}'
+      ;;
+    list)
+      printf '%s\n' '{"result":{"panes":[{"pane_id":"p1","tab_id":"w1:t1"}]}}'
+      ;;
+    read)
+      local pane="${1:-}"
+      shift || true
+      pane_read "$pane"
+      ;;
+    run)
+      local pane="${1:-}" command="${2:-}" dir
+      shift 2 || true
+      (( $# == 0 )) || command+=" $*"
+      dir="$(pane_dir "$pane")"
+      mkdir -p "$dir"
+      printf '%s' "$command" > "$dir/run"
+      if [[ -x "$FAKE_DIR/on-pane-run" ]]; then
+        "$FAKE_DIR/on-pane-run" "$pane" "$command" || exit $?
+      fi
+      if [[ ! -f "$dir/fail-ready" ]]; then : > "$dir/ready"; fi
+      ;;
+    wait-output)
+      local pane="" match="" dir
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --match) match="$2"; shift 2 ;;
+          --regex|--source|--lines|--timeout) shift 2 ;;
+          --raw) shift ;;
+          *) pane="$1"; shift ;;
+        esac
+      done
+      dir="$(pane_dir "$pane")"
+      [[ "$match" == "Type a prompt" ]] || exit 1
+      [[ -d "$dir" && -f "$dir/ready" && ! -f "$dir/fail-ready" ]] || exit 1
+      ;;
+    send-text)
+      local pane="${1:-}" text="${2:-}" dir count
+      dir="$(pane_dir "$pane")"
+      mkdir -p "$dir"
+      count="$(cat "$dir/send-count" 2>/dev/null || echo 0)"
+      count=$((count + 1))
+      printf '%s' "$count" > "$dir/send-count"
+      printf '%s' "$text" > "$dir/send-text-$count"
+      printf '%s' "$text" > "$dir/send-text"
+      ;;
+    send-keys)
+      local pane="${1:-}"
+      shift || true
+      local dir key
+      dir="$(pane_dir "$pane")"
+      mkdir -p "$dir"
+      printf '%s\n' "$*" > "$dir/send-keys"
+      for key in "$@"; do
+        if [[ "$key" == enter && -x "$FAKE_DIR/on-enter" ]]; then
+          "$FAKE_DIR/on-enter" "$pane" || exit $?
+        fi
+      done
+      ;;
+    report-agent)
+      local pane="" source="" agent="" state="" session_id="" session_path=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --source) source="$2"; shift 2 ;;
+          --agent) agent="$2"; shift 2 ;;
+          --state) state="$2"; shift 2 ;;
+          --message|--seq|--agent-session-id|--agent-session-path)
+            case "$1" in
+              --agent-session-id) session_id="$2" ;;
+              --agent-session-path) session_path="$2" ;;
+            esac
+            shift 2
+            ;;
+          --) shift ;;
+          *) pane="$1"; shift ;;
+        esac
+      done
+      [[ -n "$pane" ]] || exit 2
+      report_pane "$pane" "$source" "$agent" "$state" "$session_id" "$session_path"
+      ;;
+    report-agent-session)
+      local pane="" source="" agent="" session_id="" session_path=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --source) source="$2"; shift 2 ;;
+          --agent) agent="$2"; shift 2 ;;
+          --agent-session-id) session_id="$2"; shift 2 ;;
+          --agent-session-path) session_path="$2"; shift 2 ;;
+          --session-start-source|--seq) shift 2 ;;
+          *) pane="$1"; shift ;;
+        esac
+      done
+      local dir; dir="$(pane_dir "$pane")"
+      mkdir -p "$dir"
+      [[ -n "$session_id" ]] && printf '%s\n' "$session_id" > "$dir/session-id"
+      [[ -n "$session_path" ]] && printf '%s\n' "$session_path" > "$dir/session-path"
+      ;;
+    release-agent)
+      local pane="" src="" agent=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --source) src="$2"; shift 2 ;;
+          --agent) agent="$2"; shift 2 ;;
+          --seq) shift 2 ;;
+          *) pane="$1"; shift ;;
+        esac
+      done
+      [[ -n "$pane" ]] || exit 2
+      mkdir -p "$(pane_dir "$pane")"
+      : > "$(pane_dir "$pane")/released"
+      ;;
+    close)
+      local pane="${1:-}"
+      mkdir -p "$(pane_dir "$pane")"
+      : > "$(pane_dir "$pane")/closed"
+      ;;
     *) ;;
   esac
 }
@@ -79,7 +293,12 @@ pane() {
 tab() {
   local sub="${1:-}"
   case "$sub" in
-    create) printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"p1"}}}' ;;
+    create)
+      local dir; dir="$(pane_dir p1)"
+      mkdir -p "$dir"
+      [[ -f "$FAKE_DIR/pane-seq" ]] || printf '1' > "$FAKE_DIR/pane-seq"
+      printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"p1"}}}'
+      ;;
     get) printf '%s\n' '{"result":{"tab":{"pane_count":1}}}' ;;
     *) ;;
   esac

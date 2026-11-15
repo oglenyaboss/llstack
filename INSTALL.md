@@ -9,6 +9,7 @@ Collect, read-only:
 - OS: `uname -s`.
 - Tools: `bash -c 'echo $BASH_VERSION'` (the `bash` on PATH), `git --version`, `jq --version`, `node --version`, `gh auth status` (no other `gh` calls), and on macOS whether `timeout` or `gtimeout` is on PATH.
 - Agents: which of `claude`, `codex`, `pi` are on PATH. Config directories: Claude Code `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` plus every other `$HOME/.claude*` directory with a `settings.json` (each is a profile), Codex `~/.codex`, pi `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}`. For each, note which of `skills/`, `settings.json`, `CLAUDE.md` or `AGENTS.md` are symlinks and where they point.
+- ZCode executor: `command -v zcode`, `zcode --version`, and whether this file exists with a `defaultModelSelection`: `${ZCODE_PERSONAL_PROVIDER_CONFIG_FILE:-${ZCODE_DATA_BASE_DIR:-$HOME}/.zcode/v2/provider_config.json}`. Show only its provider and model IDs, never its keys.
 - Herdr: `herdr --version`, `herdr integration status`, and whether this session runs inside Herdr (`HERDR_ENV=1`).
 
 Done when every line has a value or "absent". Show the table.
@@ -23,7 +24,7 @@ Present the parts with your recommendation, based on step 1, and ask which to in
 | `brief` skill | a standalone brief for any executor (subagent, another agent) and how to verify its result | nothing |
 | `pr-risk` skill | review depth and merge gates from the diff's risk tier | git, node 18+ |
 | `github-projects-api` skill | GitHub Projects v2 through `gh` | gh; only for teams that plan on a board |
-| `herdr-delegate` skill | the lead briefs and verifies, workers run in Herdr panes, `hd` runs each brief's Check and lists files outside its Scope | the `brief` skill (and `pr-risk` for reviews), Herdr, pi with a configured provider, bash 4.4+, jq, git 2.31+, `timeout` or `gtimeout`. On macOS: `brew install bash coreutils jq` |
+| `herdr-delegate` skill | the lead briefs and verifies, workers run in Herdr panes, `hd` runs each brief's Check and lists files outside its Scope | the `brief` skill (and `pr-risk` for reviews), Herdr, bash 4.4+, jq, git 2.31+, `timeout` or `gtimeout`, and one configured executor: pi with a provider, or ZCode with a personal API-key provider ([setup](skills/herdr-delegate/executors/zcode.md)). On macOS: `brew install bash coreutils jq` |
 | rules | the working rules in `rules/AGENTS.md`, for the user's global agent instructions | nothing |
 
 Offer `herdr-delegate` only when step 1 found its requirements, or the user installs them now.
@@ -43,15 +44,16 @@ Done when `ls -l` on each skills directory shows every chosen link resolving int
 
 Only when `herdr-delegate` was chosen.
 
-1. When `herdr integration status` shows the pi integration missing, propose `herdr integration install pi`.
-2. Ask which model and thinking level pi workers should use. Model names only; credentials stay in pi's own config. Set them in the lead's environment as `HD_MODEL` and `HD_THINKING`. When the user has a pi web-search extension for the researcher role, add its path as `HD_PI_EXTENSIONS` (colon-separated). For Claude Code, the lead's environment is the `env` object in the `settings.json` of each chosen profile; for another lead, it is wherever that client's shell commands get their environment.
-3. Claude Code only. Offer the compact hook: after the context compacts, it reminds the lead of its role and lists the agents still running.
+1. Ask which executor the agents use: pi (default, every role), or ZCode (every role in a persistent TUI; [setup and limits](skills/herdr-delegate/executors/zcode.md)). Codex stays the scout executor. Require the chosen one to be configured: pi with a provider, or ZCode with `zcode` on PATH and a readable personal provider file. When neither is configured, stop and show what is missing.
+2. Install the Herdr integration only for a pi executor: when `herdr integration status` shows the pi integration missing, propose `herdr integration install pi`. ZCode has no Herdr integration to install; its hooks report state to Herdr.
+3. Ask which model and thinking level that executor should use, then set the chosen values as `HD_HARNESS`, `HD_MODEL`, and `HD_THINKING` in the lead's environment. pi model names stay as pi writes them; ZCode takes `providerId/modelId` and a thinking level only if the model supports it. Credentials stay in the executor's own config: pi's provider config or the personal ZCode provider file. When the user has a pi web-search extension for the researcher role, add its path as `HD_PI_EXTENSIONS` (colon-separated; pi only). For Claude Code, the lead's environment is the `env` object in the `settings.json` of each chosen profile; for another lead, it is wherever that client's shell commands get their environment.
+4. Claude Code only. Offer the compact hook: after the context compacts, it reminds the lead of its role and lists the agents still running.
 
    ```json
    {"hooks": {"SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": "bash <skills dir>/herdr-delegate/on-compact.sh", "timeout": 20}]}]}}
    ```
 
-4. Claude Code only, optional. Offer the denials that make every delegation go through `hd`:
+5. Claude Code only, optional. Offer the denials that make every delegation go through `hd`:
 
    ```json
    {"permissions": {"deny": ["Agent", "AskUserQuestion", "ListAgents", "ReportFindings", "ScheduleWakeup", "SendFeedback", "Workflow"]}}
@@ -61,7 +63,7 @@ Only when `herdr-delegate` was chosen.
 
 When editing `settings.json`: copy it to `settings.json.bak-llstack` first, merge into the existing JSON (other keys keep their values, lists get the new entries appended), then confirm `jq empty settings.json` succeeds.
 
-Done when the env values, and the hook and denials the user accepted, read back from the settings file.
+Done when the env values, the Herdr integration state, and the hook and denials the user accepted read back.
 
 ## 5. Rules
 

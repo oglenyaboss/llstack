@@ -32,6 +32,8 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
    - `failed`: send the same agent the concrete defect. After two failed corrections, do it yourself or re-brief a fresh worker.
    - `blocked_ui`: the agent shows a dialog. Ask the user before answering it.
    - `provider_error`: `hd` already retried once. Check the working tree, then re-ask or re-brief.
+   - `cancelled`: the turn was interrupted. Check the working tree before deciding whether to continue.
+   - `tui_exited`: the executor closed before finishing. Inspect its diagnostics and diff, then use `hd resume` if the task should continue.
    - To investigate a concrete sign of a problem, `hd peek <name>`. Routine waiting uses the task handle.
    - `done`: verify.
 5. **Verify.** Every claim in SUMMARY is **unverified** until you see its evidence. Done when:
@@ -91,9 +93,9 @@ These are documented limits, not security boundaries. Hand a brief to an agent o
 
 ## Requirements
 
-`bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and the Herdr integration installed for the executor you use. An executor on `PATH`: pi for every role, Codex for scouts. Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
+`bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and any Herdr integration its executor needs. An executor on `PATH`: pi (every role), Codex (scouts), or ZCode (every role after [its setup](executors/zcode.md)). Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
 
-Configuration is environment only, and all of it is optional: `HD_HARNESS` (`pi` or `codex`), `HD_MODEL`, `HD_THINKING`, `HD_PI_EXTENSIONS` (colon-separated), `PI_CODING_AGENT_DIR`. Per agent: `hd spawn <name> <role> --agent codex --model M --thinking T --cwd DIR`.
+Configuration is environment only, and all of it is optional: `HD_HARNESS` (`pi`, `codex`, or `zcode`), `HD_MODEL`, `HD_THINKING`, `HD_PI_EXTENSIONS` (colon-separated), `PI_CODING_AGENT_DIR`. For ZCode, `HD_MODEL` is `providerId/modelId`, `HD_THINKING` needs model support, and provider keys stay in its personal config; [executors/zcode.md](executors/zcode.md) has its private profile and limits. Per agent: `hd spawn <name> <role> --agent codex --model M --thinking T --cwd DIR`.
 
 ## Tests
 

@@ -15,10 +15,11 @@ PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 CODEX_SESSIONS="$HOME/.codex/sessions"
 JOURNAL="$RUN_ROOT/journal.jsonl"
 CHECK_TIMEOUT="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+source "$SKILL_DIR/zcode.sh"
 
 usage() {
   cat <<'EOF'
-hd spawn <name> <role> [--agent pi|codex] [--cwd DIR] [--model M] [--thinking T] [--session FILE]
+hd spawn <name> <role> [--agent pi|codex|zcode] [--cwd DIR] [--model M] [--thinking T] [--session FILE]
 hd ask <name> <brief | @file> [--timeout MS]
 hd wait <name> [--timeout MS]
 hd result <name>
@@ -46,6 +47,10 @@ LEAD_TAG="$(printf %s "$HERDR_PANE_ID" | digest | cut -c1-4)"
 
 target() { echo "$1-$LEAD_TAG"; }
 
+agent_target() {
+  if [[ "$(agent_kind "$1")" == zcode ]]; then zcode_pane "$1"; else target "$1"; fi
+}
+
 run_dir() {
   local d="$RUN_ROOT/${HERDR_PANE_ID//[^A-Za-z0-9]/_}"
   mkdir -p "$d"
@@ -61,14 +66,17 @@ role_tools() {
   esac
 }
 
-agent_json() { herdr agent get "$(target "$1")"; }
+agent_json() { herdr agent get "$(agent_target "$1")"; }
 agent_status() { agent_json "$1" | jq -r .result.agent.agent_status; }
 agent_kind() { cat "$(run_dir)/$1.agent" 2>/dev/null || echo pi; }
 agent_model() { cat "$(run_dir)/$1.model" 2>/dev/null || echo "$(agent_kind "$1") default"; }
 
 agent_session() {
-  if [[ "$(agent_kind "$1")" == codex ]]; then codex_session "$1"; return; fi
-  agent_json "$1" | jq -r '.result.agent.agent_session.value // empty'
+  case "$(agent_kind "$1")" in
+    codex) codex_session "$1" ;;
+    zcode) echo "$(zcode_dir "$1")/events.jsonl" ;;
+    *) agent_json "$1" | jq -r '.result.agent.agent_session.value // empty' ;;
+  esac
 }
 
 codex_session() {
@@ -84,6 +92,7 @@ codex_session() {
 
 agent_ctx() {
   local session; session="$(agent_session "$1")"
+  [[ "$(agent_kind "$1")" == zcode ]] && return 0
   [[ -f "$session" ]] || return 0
   if [[ "$(agent_kind "$1")" == codex ]]; then
     jq -rs '[.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.last_token_usage | select(.)]
@@ -94,7 +103,7 @@ agent_ctx() {
     | last | select(.) | "\(((.input + .cacheRead + .cacheWrite) / 1000) | floor)k"' "$session"
 }
 
-project_context_args() {
+project_context_files() {
   local dir="$1" found=() f
   while :; do
     for f in AGENTS.override.md AGENTS.md AGENTS.MD CLAUDE.md CLAUDE.MD; do
@@ -103,7 +112,14 @@ project_context_args() {
     [[ "$dir" == / ]] && break
     dir="$(dirname "$dir")"
   done
-  for f in "${found[@]}"; do printf '%s\0' --append-system-prompt "$f"; done
+  if (( ${#found[@]} )); then printf '%s\0' "${found[@]}"; fi
+}
+
+project_context_args() {
+  local f
+  while IFS= read -r -d '' f; do
+    printf '%s\0' --append-system-prompt "$f"
+  done < <(project_context_files "$1")
 }
 
 agent_cwd() { cat "$(run_dir)/$1.cwd" 2>/dev/null || echo "$PWD"; }
@@ -155,7 +171,8 @@ cmd_spawn() {
   case "$kind" in
     pi) ;;
     codex) spawn_codex "$name" "$role" "$cwd" "$model" "$thinking" "$session"; return ;;
-    *) die "unknown agent: $kind (pi or codex)" ;;
+    zcode) spawn_zcode "$name" "$role" "$cwd" "$model" "$thinking" "$session"; return ;;
+    *) die "unknown agent: $kind (pi, codex or zcode)" ;;
   esac
   model="${model:-$DEFAULT_MODEL}"
   thinking="${thinking:-$DEFAULT_THINKING}"
@@ -227,6 +244,20 @@ spawn_codex() {
   echo "spawned $name role=$role agent=codex pane=$pane model=$(agent_model "$name") thinking=$thinking cwd=$cwd"
 }
 
+session_mark_read() {
+  local file="$1" first="" second=""
+  if [[ -f "$file" ]]; then
+    { IFS= read -r first; IFS= read -r second; } < "$file" || true
+  fi
+  if [[ "$second" =~ ^[0-9]+$ ]]; then
+    printf '%s\0%s\0' "$first" "$second"
+  elif [[ "$first" =~ ^(.*)[[:space:]]([0-9]+)$ ]]; then
+    printf '%s\0%s\0' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '%s\0%s\0' "$first" "0"
+  fi
+}
+
 new_entries() {
   local name="$1" rd session mark_file mark_session offset
   rd="$(run_dir)"
@@ -235,13 +266,15 @@ new_entries() {
   mark_file="$rd/$name.mark"
   offset=0
   if [[ -f "$mark_file" ]]; then
-    read -r mark_session offset < "$mark_file"
+    { IFS= read -r -d '' mark_session; IFS= read -r -d '' offset; } < <(session_mark_read "$mark_file")
+    [[ "$offset" =~ ^[0-9]+$ ]] || offset=0
     [[ "$mark_session" == "$session" ]] || offset=0
   fi
   tail -n "+$((offset + 1))" "$session"
 }
 
 provider_error() {
+  if [[ "$(agent_kind "$1")" == zcode ]]; then zcode_provider_error "$1"; return; fi
   if [[ "$(agent_kind "$1")" == codex ]]; then
     new_entries "$1" | jq -rs '
       [.[] | select(.type == "event_msg" and (.payload.type == "error" or .payload.type == "task_complete")) | .payload]
@@ -254,6 +287,7 @@ provider_error() {
 }
 
 reply_text() {
+  if [[ "$(agent_kind "$1")" == zcode ]]; then zcode_reply_text "$1"; return; fi
   if [[ "$(agent_kind "$1")" == codex ]]; then
     new_entries "$1" | jq -rs '
       [.[] | select(.type == "event_msg" and .payload.type == "task_complete") | .payload.last_agent_message // empty]
@@ -266,17 +300,54 @@ reply_text() {
     | map(select(length > 0)) | last // empty'
 }
 
+screen_tail() {
+  local name="$1"
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    zcode_screen_tail "$name"
+  else
+    herdr agent read "$(agent_target "$name")" --source recent-unwrapped --lines 40
+  fi
+}
+
+zcode_print_exit() {
+  local name="$1"
+  echo "STATUS: tui_exited"
+  echo "ZCode TUI exited before the turn completed; marker: $(zcode_exit_file "$name") ($(zcode_launcher_exit "$name")); diagnostics: $(zcode_dir "$name")/log"
+  echo "--- screen tail:"
+  screen_tail "$name"
+}
+
 print_result() {
   local name="$1" text
   text="$(reply_text "$name")"
   if [[ -z "$text" ]]; then
     echo "STATUS: no_reply"
     echo "--- screen tail:"
-    herdr agent read "$(target "$name")" --source recent-unwrapped --lines 40
+    screen_tail "$name"
     return
   fi
   printf '%s\n' "$text"
   echo "ctx=$(agent_ctx "$name")"
+}
+
+dispatch_prompt() {
+  local name="$1" message="$2" timeout="$3" tag="$4"
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    zcode_new_request "$name" "$message" "$tag"
+    zcode_send_line "$name"
+    zcode_wait_turn "$name" "$timeout"
+    return 0
+  fi
+  herdr agent prompt "$(agent_target "$name")" "$message" --wait --timeout "$timeout" 2>&1
+}
+
+dispatch_wait() {
+  local name="$1" timeout="$2"
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    zcode_wait_turn "$name" "$timeout"
+    return 0
+  fi
+  herdr agent wait "$(agent_target "$name")" --timeout "$timeout" >/dev/null 2>&1
 }
 
 cmd_ask() {
@@ -316,11 +387,10 @@ cmd_ask() {
   printf '%s' "$check" > "$rd/$name.check"
   sed -n '/^Scope:/{p;q;}' <<<"$brief" | grep -o '`[^`]*`' | tr -d '`' | sed 's|^\./||' > "$rd/$name.scope" || true
   snapshot_tree "$(agent_cwd "$name")" > "$rd/$name.base" || rm -f "$rd/$name.base"
-  if [[ -f "$session" ]]; then
-    echo "$session $(wc -l < "$session")" > "$rd/$name.mark"
-  else
-    echo "$session 0" > "$rd/$name.mark"
-  fi
+  local mark_offset=0
+  [[ -f "$session" ]] && mark_offset="$(wc -l < "$session")"
+  mark_offset="${mark_offset//[[:space:]]/}"
+  printf '%s\n%s\n' "$session" "$mark_offset" > "$rd/$name.mark"
 
   local msg
   msg="$brief
@@ -330,7 +400,7 @@ OUTPUT_FILE: $out
 Write the payload your role defines to OUTPUT_FILE. End your turn with the report envelope from your role instructions."
 
   local rc=0 res
-  res="$(herdr agent prompt "$(target "$name")" "$msg" --wait --timeout "$timeout" 2>&1)" || rc=$?
+  res="$(dispatch_prompt "$name" "$msg" "$timeout" "${out##*/}")" || rc=$?
   if [[ $rc -ne 0 ]]; then
     if grep -q timeout <<<"$res"; then
       echo "STATUS: still_working"
@@ -340,29 +410,61 @@ Write the payload your role defines to OUTPUT_FILE. End your turn with the repor
     echo "$res" >&2
     exit "$rc"
   fi
+  if [[ "$(agent_kind "$name")" == zcode && "$res" == timeout ]]; then
+    echo "STATUS: still_working"
+    echo "$name has not finished; continue with: hd wait $name"
+    exit 0
+  fi
   finish "$name" "$timeout"
 }
 
 finish() {
-  local name="$1" timeout="$2" status err rd
-  status="$(agent_status "$name")"
+  local name="$1" timeout="$2" status err rd settled retry_rc=0 res
+  rd="$(run_dir)"
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    settled="$(cat "$(zcode_settled_file "$name")" 2>/dev/null || true)"
+    if [[ "$settled" == cancelled ]]; then
+      echo "STATUS: cancelled"
+      echo "--- screen tail:"
+      screen_tail "$name"
+      return
+    fi
+    if [[ "$settled" != completed && -f "$(zcode_exit_file "$name")" ]]; then
+      zcode_print_exit "$name"
+      return
+    fi
+  fi
+  if [[ "$(agent_kind "$name")" == zcode && "$settled" == completed ]]; then
+    status=""
+  else
+    status="$(agent_status "$name")"
+  fi
   if [[ "$status" == blocked ]]; then
     echo "STATUS: blocked_ui"
     echo "--- screen tail:"
-    herdr agent read "$(target "$name")" --source recent-unwrapped --lines 40
+    screen_tail "$name"
     return
   fi
   err="$(provider_error "$name")"
   if [[ -n "$err" ]]; then
-    rd="$(run_dir)"
     if [[ -f "$rd/$name.retried" ]]; then
       echo "STATUS: provider_error"
       echo "$err (already retried once; check the working tree, then re-ask or re-brief)"
       return
     fi
     touch "$rd/$name.retried"
-    if ! herdr agent prompt "$(target "$name")" "Previous turn died on a provider error ($err). Continue the same task from where you stopped, then end with the report envelope." \
-        --wait --timeout "$timeout" >/dev/null 2>&1; then
+    res="$(dispatch_prompt "$name" "Previous turn died on a provider error ($err). Continue the same task from where you stopped, then end with the report envelope." "$timeout" retry)" || retry_rc=$?
+    if [[ "$(agent_kind "$name")" == zcode ]]; then
+      if [[ -f "$(zcode_exit_file "$name")" ]]; then
+        zcode_print_exit "$name"
+        return
+      fi
+      if [[ $retry_rc -ne 0 || "$res" == timeout ]]; then
+        echo "STATUS: still_working"
+        echo "$name was retried after a provider error; continue with: hd wait $name"
+        exit 0
+      fi
+    elif [[ $retry_rc -ne 0 ]]; then
       echo "STATUS: still_working"
       echo "$name was retried after a provider error; continue with: hd wait $name"
       exit 0
@@ -459,7 +561,18 @@ cmd_wait() {
       *) usage ;;
     esac
   done
-  if ! herdr agent wait "$(target "$name")" --timeout "$timeout" >/dev/null 2>&1; then
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    [[ -f "$(zcode_request_file "$name")" ]] || die "no pending request for $name"
+    local res
+    res="$(dispatch_wait "$name" "$timeout")" || true
+    if [[ "$res" == timeout ]]; then
+      echo "STATUS: still_working"
+      exit 0
+    fi
+    finish "$name" "$timeout"
+    return
+  fi
+  if ! dispatch_wait "$name" "$timeout"; then
     echo "STATUS: still_working"
     exit 0
   fi
@@ -477,7 +590,7 @@ cmd_diff() {
 
 cmd_peek() {
   local name="${1:-}"; [[ -n "$name" ]] || usage
-  herdr agent read "$(target "$name")" --source recent-unwrapped --lines "${2:-40}"
+  herdr agent read "$(agent_target "$name")" --source recent-unwrapped --lines "${2:-40}"
 }
 
 cmd_ls() {
@@ -495,7 +608,13 @@ cmd_ls() {
 cmd_stop() {
   local name="${1:-}"; [[ -n "$name" ]] || usage
   local rd pane; rd="$(run_dir)"
-  pane="$(agent_json "$name" | jq -r .result.agent.pane_id)"
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    pane="$(zcode_pane "$name")"
+    [[ -n "$pane" ]] || die "no pane for $name"
+    zcode_save_session "$name"
+  else
+    pane="$(agent_json "$name" | jq -r .result.agent.pane_id)"
+  fi
   agent_session "$name" > "$rd/$name.session"
   herdr pane close "$pane" >/dev/null
   rm -f "$rd/$name.mark"
@@ -505,6 +624,10 @@ cmd_stop() {
 cmd_resume() {
   local name="${1:-}"; [[ -n "$name" ]] || usage
   shift
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    resume_zcode "$name" "$@"
+    return
+  fi
   local rd session; rd="$(run_dir)"
   session="$(cat "$rd/$name.session" 2>/dev/null || true)"
   [[ -f "$session" && -f "$rd/$name.role" ]] || die "no stopped session for $name"

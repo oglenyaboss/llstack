@@ -81,7 +81,7 @@ case_setup() {
   export HERDR_ENV=1
   export HERDR_PANE_ID=test:p0
   export HERDR_WORKSPACE_ID=w1
-  unset HD_HARNESS HD_MODEL HD_THINKING HD_PI_EXTENSIONS
+  unset HD_HARNESS HD_MODEL HD_THINKING HD_PI_EXTENSIONS HERDR_BIN_PATH
   cd "$CASE_TMP/work"
   git init -q
   printf 'base\n' > src/a.txt
@@ -159,4 +159,21 @@ path_without() {
   done
   for name in "$@"; do rm -f "$out/$name"; done
   printf '%s\n' "$out"
+}
+
+file_mode() {
+  if stat -c %a "$1" >/dev/null 2>&1; then stat -c %a "$1"; else stat -f %Lp "$1"; fi
+}
+
+assert_mode() {
+  local expected="$1" path="$2" label="${3:-$2}"
+  assert_exists "$path" "$label"
+  assert_eq "$expected" "$(file_mode "$path")" "$label mode"
+}
+
+zcode_state_dir() {
+  local dirs=("$XDG_CACHE_HOME"/herdr-delegate/*/"$1.zcode")
+  [[ -e "${dirs[0]}" ]] || t_fail "no zcode state dir for $1"
+  (( ${#dirs[@]} == 1 )) || t_fail "expected one zcode state dir for $1, found ${#dirs[@]}"
+  printf '%s\n' "${dirs[0]}"
 }

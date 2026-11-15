@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state="${1:-}"
+[[ -n "$state" && -d "$state" ]] || { echo "zcode-launch: missing state directory" >&2; exit 1; }
+state="$(cd "$state" && pwd -P)"
+launcher_exit_file="$state/launcher-exit.$$"
+
+bin="$(cat "$state/zcode-bin" 2>/dev/null || true)"
+[[ -x "$bin" ]] || { echo "zcode-launch: zcode executable is missing" >&2; exit 1; }
+cwd="$(cat "$state/cwd" 2>/dev/null || true)"
+[[ -d "$cwd" ]] || { echo "zcode-launch: working directory is missing" >&2; exit 1; }
+profile_home="$state/home"
+[[ -f "$profile_home/.zcode/cli/config.json" ]] || { echo "zcode-launch: private config is missing" >&2; exit 1; }
+
+export HOME="$profile_home"
+export USERPROFILE="$profile_home"
+export ZCODE_DATA_BASE_DIR="$profile_home"
+export ZCODE_PERSONAL_PROVIDER_CONFIG_FILE="$profile_home/.zcode/v2/provider_config.json"
+export ZCODE_SESSION_DB_PATH="$state/db/db.sqlite"
+export ZCODE_STORAGE_DIR="$state/storage"
+export ZCODE_LOG_DIR="$state/log"
+
+cd "$cwd"
+
+args=(--locale en-US --mode yolo --workflow-mode disabled --cwd "$cwd")
+if [[ -s "$state/session-id" ]]; then
+  args+=(--resume "$(cat "$state/session-id")")
+fi
+if [[ -s "$state/disallowed" ]]; then
+  args+=(--disallowed-tools "$(cat "$state/disallowed")")
+fi
+
+release() {
+  [[ "${HERDR_ENV:-}" == 1 && -n "${HERDR_PANE_ID:-}" ]] || return 0
+  local herdr="${HERDR_BIN_PATH:-herdr}" t
+  t="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+  if [[ -n "$t" ]]; then
+    "$t" 2 "$herdr" pane release-agent --source llstack:zcode --agent zcode "$HERDR_PANE_ID" >/dev/null 2>&1 || true
+  else
+    "$herdr" pane release-agent --source llstack:zcode --agent zcode "$HERDR_PANE_ID" >/dev/null 2>&1 || true
+  fi
+}
+
+launcher_exit() {
+  local rc=$?
+  (umask 077; printf 'pid=%s status=%s\n' "$$" "$rc" > "$launcher_exit_file") 2>/dev/null || true
+  release
+}
+trap launcher_exit EXIT
+
+rm -f "$launcher_exit_file"
+(umask 077; printf '%s\n' "$$" > "$state/launcher-pid")
+"$bin" "${args[@]}"
