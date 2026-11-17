@@ -364,7 +364,7 @@ cmd_ask() {
     brief="$(cat "${brief#@}")"
   fi
   local check
-  check="$(sed -n '/^Check:/{s/^Check:[[:space:]]*`\([^`]*\)`.*/\1/p;q;}' <<<"$brief")"
+  check="$(sed -n '/^Check:/{s/^Check:[[:space:]]*//;s/^`\([^`]*\)`.*/\1/;s/[[:space:]]*$//;p;q;}' <<<"$brief")"
   [[ -z "$check" || -n "$CHECK_TIMEOUT" ]] || die "Check needs timeout or gtimeout (macOS: brew install coreutils)"
 
   if [[ "$name" == sk ]] && ! agent_json sk >/dev/null 2>&1; then
@@ -374,6 +374,9 @@ cmd_ask() {
   local status
   status="$(agent_status "$name")"
   [[ "$status" == idle || "$status" == done ]] || die "$name is $status, not ready for input"
+  if [[ "$(agent_kind "$name")" == zcode ]] && zcode_in_flight "$name"; then
+    die "$name has an ask in flight; continue with: hd wait $name"
+  fi
 
   local rd role seq out session
   rd="$(run_dir)"
@@ -387,6 +390,8 @@ cmd_ask() {
   printf '%s' "$check" > "$rd/$name.check"
   sed -n '/^Scope:/{p;q;}' <<<"$brief" | grep -o '`[^`]*`' | tr -d '`' | sed 's|^\./||' > "$rd/$name.scope" || true
   snapshot_tree "$(agent_cwd "$name")" > "$rd/$name.base" || rm -f "$rd/$name.base"
+  date +%s > "$rd/$name.ask-start"
+  rm -f "$rd/$name.ask-end"
   local mark_offset=0
   [[ -f "$session" ]] && mark_offset="$(wc -l < "$session")"
   mark_offset="${mark_offset//[[:space:]]/}"
@@ -419,6 +424,11 @@ Write the payload your role defines to OUTPUT_FILE. End your turn with the repor
 }
 
 finish() {
+  settle_ask "$@"
+  [[ "$(agent_status "$1" 2>/dev/null)" == blocked ]] || date +%s > "$(run_dir)/$1.ask-end"
+}
+
+settle_ask() {
   local name="$1" timeout="$2" status err rd settled retry_rc=0 res
   rd="$(run_dir)"
   if [[ "$(agent_kind "$name")" == zcode ]]; then
@@ -475,6 +485,7 @@ finish() {
   print_result "$name"
   run_check "$name"
   run_scope "$name"
+  run_concurrent "$name"
   journal_ask "$name"
 }
 
@@ -513,6 +524,26 @@ run_scope() {
   [[ ${#outside[@]} -eq 0 ]] || printf '%s\n' "${outside[@]}"
 }
 
+tree_root() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || echo "$1"; }
+
+run_concurrent() {
+  local name="$1" rd root start f other others=()
+  rd="$(run_dir)"
+  rm -f "$rd/$name.concurrent"
+  root="$(tree_root "$(agent_cwd "$name")")"
+  start="$(cat "$rd/$name.ask-start" 2>/dev/null || echo 0)"
+  for f in "$rd"/*.ask-start; do
+    [[ -e "$f" ]] || continue
+    other="$(basename "$f" .ask-start)"
+    [[ "$other" != "$name" && "$(tree_root "$(agent_cwd "$other")")" == "$root" ]] || continue
+    [[ ! -f "$rd/$other.ask-end" ]] || (( $(cat "$rd/$other.ask-end") >= start )) || continue
+    others+=("$other")
+  done
+  (( ${#others[@]} )) || return 0
+  printf '%s\n' "${others[@]}" > "$rd/$name.concurrent"
+  printf -- '--- concurrent: %s asked in this tree during this ask; changed files may be theirs\n' "${others[*]}"
+}
+
 journal_lines() { if [[ -f "$1" ]]; then jq -Rn '[inputs]' < "$1"; else echo '[]'; fi; }
 
 journal_ask() {
@@ -530,9 +561,10 @@ journal_ask() {
     --argjson scope "$(journal_lines "$rd/$name.scope")" \
     --argjson changed "$(journal_lines "$rd/$name.changed")" \
     --argjson outside "$(journal_lines "$rd/$name.outside")" \
+    --argjson concurrent "$(journal_lines "$rd/$name.concurrent")" \
     --arg ctx "$(agent_ctx "$name")" \
     '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
-      status: $status, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside,
+      status: $status, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
       ctx: $ctx, brief: $brief, payload: $payload}' >> "$JOURNAL"
 }
 

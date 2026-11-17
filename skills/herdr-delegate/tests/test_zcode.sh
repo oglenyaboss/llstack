@@ -1078,6 +1078,36 @@ case_roles() {
   assert_contains "$tools" 'Bash Edit ApplyPatch' "researcher tools"
 }
 
+
+case_ask_in_flight() {
+  zcode_setup
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "zcode spawn"
+  local state; state="$(zstate w1)"
+  write_on_enter <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+pane="$1"
+source "$HD_TEST_LIB"
+state="$(zcode_state_dir w1)"
+jq -nc --arg s sess-busy --arg t turn-busy --arg p "$(<"$state/line")" \
+  '{hookEventName:"UserPromptSubmit",sessionId:$s,turnId:$t,prompt:$p}' >> "$state/events.jsonl"
+SCRIPT
+  hd_run ask w1 'First brief.' --timeout 300
+  assert_contains "$HD_OUT" 'STATUS: still_working' "first ask times out"
+  local first_request; first_request="$(<"$state/request")"
+  hd_run ask w1 'First brief.' --timeout 300
+  assert_eq 1 "$HD_RC" "second ask while the first is in flight"
+  assert_contains "$HD_OUT" 'hd wait w1' "in-flight diagnostic"
+  assert_eq 1 "$(send_count "$(zc_pane w1)")" "no second submission"
+  assert_eq "$first_request" "$(<"$state/request")" "request kept"
+  zc_stop_event "$state" sess-busy turn-busy $'late reply\nSTATUS: done'
+  zc_completed_log "$state" sess-busy turn-busy
+  hd_run wait w1 --timeout 3000
+  assert_eq 0 "$HD_RC" "wait after the refused ask"
+  assert_contains "$HD_OUT" 'late reply' "first ask still settles"
+}
+
 run_case zcode_invalid_name case_invalid_name
 run_case zcode_spawn_tui case_spawn_tui
 run_case zcode_spawn_preserves_state case_spawn_preserves_state
@@ -1106,3 +1136,4 @@ run_case zcode_resume_after_tui_exit case_resume_after_tui_exit
 run_case zcode_resume_manual_session case_resume_manual_session
 run_case zcode_resume_empty case_resume_empty
 run_case zcode_paths_quotes case_paths_quotes
+run_case zcode_ask_in_flight case_ask_in_flight

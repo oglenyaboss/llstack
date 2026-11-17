@@ -8,6 +8,7 @@ zcode_request_file() { echo "$(zcode_dir "$1")/request"; }
 zcode_line_file() { echo "$(zcode_dir "$1")/line"; }
 zcode_turn_file() { echo "$(zcode_dir "$1")/turn"; }
 zcode_settled_file() { echo "$(zcode_dir "$1")/settled"; }
+zcode_in_flight() { [[ -f "$(zcode_request_file "$1")" && ! -f "$(zcode_settled_file "$1")" ]]; }
 
 zcode_exit_file() {
   local dir pid

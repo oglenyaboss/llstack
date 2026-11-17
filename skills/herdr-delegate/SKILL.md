@@ -87,7 +87,7 @@ Two extensions of this skill live beside it, off by default and outside the revi
 These are documented limits, not security boundaries. Hand a brief to an agent only when you would run its Check yourself.
 
 - **Read-only roles are an instruction, not a sandbox.** A scout has `write` so it can produce its payload, and a Codex scout runs with `-s workspace-write`. A misbehaving scout can change the working tree; `hd diff` and `git status` are how you find out.
-- **Scope is checked after the turn.** `hd` snapshots the tree before the ask and lists changed files outside Scope after it. Nothing stops the write while it happens.
+- **Scope is checked after the turn.** `hd` snapshots the tree before the ask and lists changed files outside Scope after it. Nothing stops the write while it happens. Other asks open in the same tree during this one are named under `--- concurrent`, and their changes land in this ask's lists; give parallel writers their own worktrees.
 - **Check is an arbitrary shell command.** It comes from the brief and runs in the agent's cwd with a 10 minute cap. Treat a brief as code, because `hd` runs part of it.
 - **The journal is local.** `~/.cache/herdr-delegate/` holds payloads, briefs and journal lines in plain text; nothing prunes it.
 

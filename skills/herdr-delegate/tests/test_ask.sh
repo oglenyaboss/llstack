@@ -261,6 +261,60 @@ EOF
   assert_eq 1 "$(prompt_calls)" "agent prompt calls"
 }
 
+
+case_check_without_backticks() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+mkdir -p src
+printf 'b\n' > src/b.txt
+turn "$2" "did it
+STATUS: done"
+EOF
+  hd_run ask w1 $'Do the work.\n\nCheck: test -f src/b.txt  \nScope: `src/b.txt`'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" $'--- check: test -f src/b.txt\nexit=0'
+}
+
+case_concurrent_ask() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  mkdir -p "$CASE_TMP/elsewhere"
+  hd_run spawn w3 worker --cwd "$CASE_TMP/elsewhere"
+  assert_eq 0 "$HD_RC" "hd spawn w3"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*)
+    "$HD" ask w2 'Other work.' > "$FAKE_DIR/w2.out"
+    mkdir -p src
+    printf 'b\n' > src/b.txt ;;
+  w2-*) printf 'other\n' > other.txt ;;
+esac
+turn "$2" "did it
+STATUS: done"
+EOF
+  hd_run ask w3 'Before.'
+  assert_eq 0 "$HD_RC" "hd ask w3"
+  sleep 1
+  hd_run ask w1 $'Do the work.\n\nScope: `src/b.txt`'
+  assert_eq 0 "$HD_RC" "hd ask w1"
+  assert_contains "$HD_OUT" '--- concurrent: w2 ' "w1 names w2"
+  assert_contains "$(cat "$FAKE_DIR/w2.out")" '--- concurrent: w1 ' "w2 names w1"
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
+  assert_jq '.concurrent == ["w2"]' "$(jq -c 'select(.name == "w1")' "$journal")" "w1 journal"
+  assert_jq '.concurrent == []' "$(jq -c 'select(.name == "w3")' "$journal")" "w3 journal"
+  sleep 1
+  hd_run ask w2 'After.'
+  assert_eq 0 "$HD_RC" "hd ask w2 after"
+  assert_not_contains "$HD_OUT" '--- concurrent' "sequential ask"
+}
+
 run_case ask_reply_check_scope case_reply_check_scope
 run_case ask_scope_outside_file case_scope_outside_file
 run_case ask_scope_directory_and_glob case_scope_directory_and_glob
@@ -272,3 +326,5 @@ run_case ask_scope_in_repo_without_index case_scope_in_repo_without_index
 run_case ask_check_gtimeout_fallback case_check_gtimeout_fallback
 run_case ask_check_without_timeout case_check_without_timeout
 run_case ask_without_timeout_no_check case_ask_without_timeout_no_check
+run_case ask_check_without_backticks case_check_without_backticks
+run_case ask_concurrent case_concurrent_ask
