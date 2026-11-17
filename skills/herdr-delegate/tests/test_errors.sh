@@ -64,6 +64,7 @@ EOF
   hd_run ask w1 'Do the work.'
   assert_eq 0 "$HD_RC" "hd ask exit"
   assert_contains "$HD_OUT" "STATUS: provider_error"
+  assert_contains "$HD_OUT" "agent=pi model=pi default"
   assert_eq 2 "$(prompt_calls)" "agent prompt calls"
 }
 

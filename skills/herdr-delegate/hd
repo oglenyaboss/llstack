@@ -460,6 +460,7 @@ settle_ask() {
     if [[ -f "$rd/$name.retried" ]]; then
       echo "STATUS: provider_error"
       echo "$err (already retried once; check the working tree, then re-ask or re-brief)"
+      echo "agent=$(agent_kind "$name") model=$(agent_model "$name")"
       return
     fi
     touch "$rd/$name.retried"

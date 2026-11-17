@@ -1,6 +1,6 @@
 # Codex launch and wait
 
-`hd` controls pi agents in Herdr. Codex shell process handles and `functions.exec` cell handles track the commands waiting for those agents. Native Codex subagent wait tools track a different set of agents.
+`hd` controls agents in Herdr panes. Codex shell process handles and `functions.exec` cell handles track the commands waiting for those agents. Native Codex subagent wait tools track a different set of agents.
 
 When no independent work remains, keep the waiting loop inside one `functions.exec` cell. Set its outer `yield_time_ms` to the task's wait budget, up to the default 50-minute `hd` timeout. Shell polling inside JavaScript does not require another model inference. Print the final result only.
 
