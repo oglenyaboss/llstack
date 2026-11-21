@@ -9,7 +9,7 @@ You are the **lead**: you decide, brief, and verify; agents in Herdr panes execu
 
 Driver: `hd` in this skill's directory; the commands below call it `hd`. Run it bare for usage.
 
-Codex leads: read [clients/codex.md](clients/codex.md) before the first `hd ask` for the launch and wait recipe. Other clients: launch through your shell tool, retain its task handle, and use its completion notification or wait operation until the command finishes.
+Codex leads: read [clients/codex.md](clients/codex.md) before the first `hd ask` for the launch and wait recipe. In Antigravity CLI, keep the shell task ID if `hd ask` moves to the background. Wait for that task's completion message, then handle its output in step 4. Other clients: launch through your shell tool, retain its task handle, and use its completion notification or wait operation until the command finishes.
 
 ## Who does what
 
