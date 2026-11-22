@@ -30,7 +30,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
 4. **Read the envelope** by meaning; small models drift its keys and language.
    - `needs_decision`: decide, or ask the user if the choice is theirs, then `hd ask` the same agent; it keeps its context. A brief that contradicts the code is your error: fix the brief.
    - `failed`: send the same agent the concrete defect. After two failed corrections, do it yourself or re-brief a fresh worker.
-   - `blocked_ui`: the agent shows a dialog. Ask the user before answering it.
+   - `blocked_ui`: the agent shows a dialog. Ask the user before answering it. For Codex this includes the hook-review and folder-trust dialogs at startup; hd reports them before sending the brief.
    - `provider_error`: `hd` already retried once. Check the working tree, then re-ask or re-brief. A 401 or 403 is a key or subscription: report the agent and model to the user, who picks the model.
    - `cancelled`: the turn was interrupted. Check the working tree before deciding whether to continue.
    - `tui_exited`: the executor closed before finishing. Inspect its diagnostics and diff, then use `hd resume` if the task should continue.
@@ -49,7 +49,7 @@ The assigned brief remains the completion criterion while waiting. Elapsed time,
 
 ## Briefs in hd
 
-Two fields of the brief are mechanical here. After the reply, `hd` runs Check in the agent's cwd (10 minute cap) and appends its exit code and output tail under `--- check`, and lists every changed file outside Scope under `--- scope`. Both apply to one ask: repeat them in every correction. The agent shows each Acceptance case red, then green, in SUMMARY.
+Two fields of the brief are mechanical here. After the reply, `hd` runs Check in the agent's cwd (10 minute cap) and appends its exit code and output tail under `--- check`, and lists every changed file outside Scope under `--- scope`. Both apply to one ask: repeat them in every correction. The agent shows each Acceptance case red, then green, in SUMMARY. Check runs under pipefail: end it with the test command or pipe into `tail`, never `head`, whose early exit fails the pipe. When the agent reports done and Check fails or files changed outside Scope with no concurrent ask, hd sends the agent the failure, up to two rounds, and shows each round as a `--- autofix` line before the envelope.
 
 ## Roles
 
@@ -86,14 +86,14 @@ Two extensions of this skill live beside it, off by default and outside the revi
 
 These are documented limits, not security boundaries. Hand a brief to an agent only when you would run its Check yourself.
 
-- **Read-only roles are an instruction, not a sandbox.** A scout has `write` so it can produce its payload, and a Codex scout runs with `-s workspace-write`. A misbehaving scout can change the working tree; `hd diff` and `git status` are how you find out.
+- **Read-only roles are an instruction, not a sandbox.** A scout has `write` so it can produce its payload, and a Codex scout runs with `-s workspace-write`. A Codex worker runs with `-s danger-full-access`, because the workspace-write sandbox blocks the network and the build caches outside the repo that its tests need. A misbehaving scout can change the working tree; `hd diff` and `git status` are how you find out.
 - **Scope is checked after the turn.** `hd` snapshots the tree before the ask and lists changed files outside Scope after it. Nothing stops the write while it happens. Other asks open in the same tree during this one are named under `--- concurrent`, and their changes land in this ask's lists; give parallel writers their own worktrees.
 - **Check is an arbitrary shell command.** It comes from the brief and runs in the agent's cwd with a 10 minute cap. Treat a brief as code, because `hd` runs part of it.
 - **The journal is local.** `~/.cache/herdr-delegate/` holds payloads, briefs and journal lines in plain text; nothing prunes it.
 
 ## Requirements
 
-`bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and any Herdr integration its executor needs. An executor on `PATH`: pi (every role), Codex (scouts), or ZCode (every role after [its one-time setup](executors/zcode.md)). Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
+`bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and any Herdr integration its executor needs. An executor on `PATH`: pi (every role), Codex (scouts and workers), or ZCode (every role after [its one-time setup](executors/zcode.md)). Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
 
 Configuration is environment only, and all of it is optional: `HD_HARNESS` (`pi`, `codex`, or `zcode`), `HD_MODEL`, `HD_THINKING`, `HD_PI_EXTENSIONS` (colon-separated), `PI_CODING_AGENT_DIR`. For ZCode, `HD_MODEL` is `providerId/modelId`, `HD_THINKING` needs model support, and provider keys stay in its personal config; [executors/zcode.md](executors/zcode.md) has its private profile and limits. Per agent: `hd spawn <name> <role> --agent codex --model M --thinking T --cwd DIR`.
 

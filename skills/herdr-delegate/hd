@@ -221,18 +221,20 @@ start_agent() {
   fi
 }
 
-# ponytail: codex runs scouts only (the skeptic); a codex worker needs its sandbox and Scope review designed first
+# ponytail: codex runs scouts and workers; sidekick and researcher need network and build caches, untried on codex
 spawn_codex() {
   local name="$1" role="$2" cwd="$3" model="$4" thinking="${5:-high}" session="$6"
-  [[ "$role" == scout ]] || die "codex agents run as scout only"
+  [[ "$role" == scout || "$role" == worker ]] || die "codex agents run as scout or worker only"
   cwd="$(cd "$cwd" && pwd)"
-  local rd pane args=() instructions
+  local rd pane args=() instructions sandbox
   rd="$(run_dir)"
+  sandbox=(-s workspace-write --add-dir "$rd")
+  [[ "$role" == worker ]] && sandbox=(-s danger-full-access)
   if [[ -n "$session" ]]; then
     args=(resume "$(jq -r 'select(.type == "session_meta") | .payload.id' "$session" | head -n 1)")
   fi
   instructions="$(cat "$SKILL_DIR/roles/$role.md" "$SKILL_DIR/roles/_envelope.md" | jq -Rs .)"
-  args+=(-C "$cwd" -s workspace-write --add-dir "$rd" -a never
+  args+=(-C "$cwd" "${sandbox[@]}" -a never
     -c "model_reasoning_effort=\"$thinking\"" -c 'project_doc_fallback_filenames=["CLAUDE.md"]'
     -c "developer_instructions=$instructions")
   [[ -n "$model" ]] && args+=(-m "$model")
@@ -374,17 +376,34 @@ cmd_ask() {
   local status
   status="$(agent_status "$name")"
   [[ "$status" == idle || "$status" == done ]] || die "$name is $status, not ready for input"
+  if [[ "$(agent_kind "$name")" == codex ]]; then
+    local pane screen
+    pane="$(agent_json "$name" | jq -r .result.agent.pane_id)"
+    if screen="$(herdr pane read "$pane" --source visible)" &&
+      grep -qiE 'hooks? needs? review|trust this folder\?' <<<"$screen"; then
+      echo "STATUS: blocked_ui"
+      echo "codex shows a startup dialog in pane $pane; answer it there once the user agrees, then hd ask again"
+      grep -v '^[[:space:]]*$' <<<"$screen" | tail -n 15
+      return
+    fi
+  fi
   if [[ "$(agent_kind "$name")" == zcode ]] && zcode_in_flight "$name"; then
     die "$name has an ask in flight; continue with: hd wait $name"
   fi
 
-  local rd role seq out session
+  local rd role seq out session head_commit
   rd="$(run_dir)"
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
+  rm -f "$rd/$name.autofix"
+  if head_commit="$(git -C "$(agent_cwd "$name")" rev-parse HEAD 2>/dev/null)"; then
+    printf '%s\n' "$head_commit" > "$rd/$name.head"
+  else
+    rm -f "$rd/$name.head"
+  fi
   echo "$out" > "$rd/$name.out"
   printf '%s\n' "$brief" > "${out%.md}.brief"
   printf '%s' "$check" > "$rd/$name.check"
@@ -426,6 +445,14 @@ Write the payload your role defines to OUTPUT_FILE. End your turn with the repor
 finish() {
   settle_ask "$@"
   [[ "$(agent_status "$1" 2>/dev/null)" == blocked ]] || date +%s > "$(run_dir)/$1.ask-end"
+}
+
+reply_done() {
+  local text line
+  text="$(reply_text "$1")"
+  line="$(grep -m1 -E 'STATUS|СТАТУС' <<<"$text" || true)"
+  [[ -n "$line" ]] || return 1
+  grep -qiE 'done|готово' <<<"$line"
 }
 
 settle_ask() {
@@ -483,10 +510,59 @@ settle_ask() {
     finish "$name" "$timeout"
     return
   fi
+  local check_block scope_block concurrent_block rounds=0 check_rc="" outside=""
+  local check_fail=0 outside_fail=0 reason="" msg scope_files
+  check_block="$(run_check "$name")"
+  scope_block="$(run_scope "$name")"
+  concurrent_block="$(run_concurrent "$name")"
+  if [[ -f "$rd/$name.autofix" ]]; then rounds="$(<"$rd/$name.autofix")"; fi
+  [[ "$rounds" =~ ^[0-9]+$ ]] || rounds=0
+  if [[ -f "$rd/$name.check-exit" ]]; then check_rc="$(<"$rd/$name.check-exit")"; fi
+  if [[ -f "$rd/$name.outside" ]]; then outside="$(<"$rd/$name.outside")"; fi
+  if [[ -n "$check_rc" && "$check_rc" != 0 ]]; then check_fail=1; fi
+  if [[ -n "$outside" && ! -f "$rd/$name.concurrent" ]]; then outside_fail=1; fi
+  if reply_done "$name" && (( rounds < 2 )) && { (( check_fail )) || (( outside_fail )); }; then
+    rounds=$((rounds + 1))
+    printf '%s\n' "$rounds" > "$rd/$name.autofix"
+    if (( check_fail )); then reason="check exit=$check_rc"; fi
+    if (( outside_fail )); then
+      if [[ -n "$reason" ]]; then reason+="; "; fi
+      reason+="outside Scope: ${outside//$'\n'/ }"
+    fi
+    echo "--- autofix $rounds/2: $reason"
+    msg="hd checked your turn and a gate failed."
+    if (( check_fail )); then
+      msg+=$'\n'"Check \`$(cat "$rd/$name.check")\` exited $check_rc. Last 40 lines of its output:"
+      msg+=$'\n'"$(tail -n 40 "$rd/$name.check-out")"
+    fi
+    if (( outside_fail )); then
+      scope_files="$(paste -sd' ' "$rd/$name.scope")"
+      msg+=$'\n'"Files changed outside Scope: ${outside//$'\n'/ }. Scope: $scope_files. Revert those files; if the brief requires them, say so under QUESTION."
+    fi
+    msg+=$'\n'"Fix it within the same brief and Scope, update OUTPUT_FILE $(cat "$rd/$name.out"), then end your turn with the report envelope."
+    res="$(dispatch_prompt "$name" "$msg" "$timeout" autofix)" || retry_rc=$?
+    if [[ "$(agent_kind "$name")" == zcode ]]; then
+      if [[ -f "$(zcode_exit_file "$name")" ]]; then
+        zcode_print_exit "$name"
+        return
+      fi
+      if [[ $retry_rc -ne 0 || "$res" == timeout ]]; then
+        echo "STATUS: still_working"
+        echo "$name was sent an autofix round; continue with: hd wait $name"
+        exit 0
+      fi
+    elif [[ $retry_rc -ne 0 ]]; then
+      echo "STATUS: still_working"
+      echo "$name was sent an autofix round; continue with: hd wait $name"
+      exit 0
+    fi
+    finish "$name" "$timeout"
+    return
+  fi
   print_result "$name"
-  run_check "$name"
-  run_scope "$name"
-  run_concurrent "$name"
+  if [[ -n "$check_block" ]]; then printf '%s\n' "$check_block"; fi
+  if [[ -n "$scope_block" ]]; then printf '%s\n' "$scope_block"; fi
+  if [[ -n "$concurrent_block" ]]; then printf '%s\n' "$concurrent_block"; fi
   journal_ask "$name"
 }
 
@@ -496,8 +572,9 @@ run_check() {
   rm -f "$rd/$name.check-exit"
   check="$(cat "$rd/$name.check" 2>/dev/null || true)"
   [[ -n "$check" ]] || return 0
-  out="$(cd "$(agent_cwd "$name")" && "$CHECK_TIMEOUT" 600 bash -c "$check" 2>&1)" || rc=$?
+  out="$(cd "$(agent_cwd "$name")" && "$CHECK_TIMEOUT" 600 bash -o pipefail -c "$check" 2>&1)" || rc=$?
   echo "$rc" > "$rd/$name.check-exit"
+  printf '%s\n' "$out" > "$rd/$name.check-out"
   printf -- '--- check: %s\nexit=%s\n' "$check" "$rc"
   tail -n 20 <<<"$out"
 }
@@ -548,15 +625,20 @@ run_concurrent() {
 journal_lines() { if [[ -f "$1" ]]; then jq -Rn '[inputs]' < "$1"; else echo '[]'; fi; }
 
 journal_ask() {
-  local name="$1" rd out cwd
+  local name="$1" rd out cwd autofix
   rd="$(run_dir)"
   out="$(cat "$rd/$name.out" 2>/dev/null || true)"
   cwd="$(agent_cwd "$name")"
+  autofix="$(cat "$rd/$name.autofix" 2>/dev/null || echo 0)"
+  [[ "$autofix" =~ ^[0-9]+$ ]] || autofix=0
   jq -nc --arg ts "$(date +%Y-%m-%dT%H:%M:%S%z)" --arg project "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")" \
     --arg name "$name" --arg role "$(cat "$rd/$name.role" 2>/dev/null || echo unknown)" \
     --arg agent "$(agent_kind "$name")" --arg model "$(agent_model "$name")" \
     --arg brief "${out%.md}.brief" --arg payload "$out" \
     --arg status "$(reply_text "$name" | grep -m1 -E 'STATUS' || true)" \
+    --argjson autofix "$autofix" \
+    --arg head "$(cat "$rd/$name.head" 2>/dev/null || true)" \
+    --arg base "$(cat "$rd/$name.base" 2>/dev/null || true)" \
     --arg check "$(cat "$rd/$name.check" 2>/dev/null || true)" \
     --arg check_exit "$(cat "$rd/$name.check-exit" 2>/dev/null || true)" \
     --argjson scope "$(journal_lines "$rd/$name.scope")" \
@@ -565,7 +647,7 @@ journal_ask() {
     --argjson concurrent "$(journal_lines "$rd/$name.concurrent")" \
     --arg ctx "$(agent_ctx "$name")" \
     '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
-      status: $status, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
+      status: $status, autofix: $autofix, head: $head, base: $base, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
       ctx: $ctx, brief: $brief, payload: $payload}' >> "$JOURNAL"
 }
 

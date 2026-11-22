@@ -315,6 +315,242 @@ EOF
   assert_not_contains "$HD_OUT" '--- concurrent' "sequential ask"
 }
 
+case_check_pipefail() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "need a decision
+STATUS: needs_decision"
+EOF
+  local brief='Do the work.
+
+Check: `false | cat`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "exit=1"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+  assert_not_contains "$HD_OUT" "--- autofix"
+}
+
+case_autofix_check_fixed() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if [[ "$3" == 1 ]]; then
+  turn "$2" "first try
+STATUS: done"
+else
+  mkdir -p src
+  printf 'b\n' > src/b.txt
+  turn "$2" "fixed
+STATUS: done"
+fi
+EOF
+  local brief='Do the work.
+
+Check: `test -f src/b.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: check exit=1"
+  assert_contains "$HD_OUT" "fixed"
+  assert_contains "$HD_OUT" "exit=0"
+  assert_not_contains "$HD_OUT" "first try"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+  local prompt
+  prompt="$(cat "$(single_agent_dir)/last-prompt")"
+  assert_contains "$prompt" 'Check `test -f src/b.txt` exited 1' "autofix prompt"
+  assert_contains "$prompt" "OUTPUT_FILE" "autofix prompt"
+}
+
+case_autofix_cap() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "still broken
+STATUS: done"
+EOF
+  local brief='Do the work.
+
+Check: `test -f src/b.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_eq 3 "$(prompt_calls)" "agent prompt calls"
+  assert_contains "$HD_OUT" "--- autofix 2/2: check exit=1"
+  assert_contains "$HD_OUT" "exit=1"
+  assert_not_contains "$HD_OUT" "--- autofix 3"
+}
+
+case_autofix_russian_status() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if [[ "$3" == 1 ]]; then
+  turn "$2" "не вышло
+СТАТУС: готово"
+else
+  mkdir -p src
+  printf 'b\n' > src/b.txt
+  turn "$2" "исправил
+СТАТУС: готово"
+fi
+EOF
+  local brief='Do the work.
+
+Check: `test -f src/b.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+  assert_contains "$HD_OUT" "exit=0"
+}
+
+case_autofix_scope_outside() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if [[ "$3" == 1 ]]; then
+  mkdir -p src
+  printf 'b\n' > src/b.txt
+  printf 'other\n' > other.txt
+else
+  rm -f other.txt
+fi
+turn "$2" "did it
+STATUS: done"
+EOF
+  local brief='Do the work.
+
+Scope: `src/b.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: outside Scope: other.txt"
+  assert_contains "$HD_OUT" "--- scope: 1 changed, 0 outside Scope"
+  local prompt
+  prompt="$(cat "$(single_agent_dir)/last-prompt")"
+  assert_contains "$prompt" "other.txt" "autofix prompt"
+}
+
+case_autofix_journal() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if [[ "$3" == 1 ]]; then
+  turn "$2" "first try
+STATUS: done"
+else
+  mkdir -p src
+  printf 'b\n' > src/b.txt
+  turn "$2" "fixed
+STATUS: done"
+fi
+EOF
+  local brief='Do the work.
+
+Check: `test -f src/b.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl" entry
+  assert_eq 1 "$(( $(wc -l < "$journal") ))" "journal line count"
+  entry="$(jq -c 'select(.event == "ask")' "$journal")"
+  assert_jq '.autofix == 1' "$entry" "journal autofix"
+  assert_eq "$(git rev-parse HEAD)" "$(jq -r '.head' <<< "$entry")" "journal head"
+  assert_jq '.base | length > 0' "$entry" "journal base"
+  write_hook <<'EOF2'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "did it
+STATUS: done"
+EOF2
+  hd_run ask w1 'Do the work.
+
+Check: `test -f src/b.txt`'
+  assert_eq 0 "$HD_RC" "hd ask without autofix"
+  entry="$(jq -c 'select(.event == "ask")' "$journal" | tail -n 1)"
+  assert_jq '.autofix == 0' "$entry" "journal autofix without rounds"
+}
+
+case_no_autofix_failed_status() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "broken
+STATUS: failed"
+EOF
+  local brief='Do the work.
+
+Check: `test -f src/b.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+  assert_not_contains "$HD_OUT" "--- autofix"
+}
+
+case_ask_codex_hook_review() {
+  hd_run spawn sc scout --agent codex
+  assert_eq 0 "$HD_RC" "hd spawn codex scout"
+  mkdir -p "$FAKE_DIR/panes/p1"
+  printf '%s\n' '⚠ 1 hook needs review before it can run.' '  t trust all · enter review · esc close' > "$FAKE_DIR/panes/p1/screen"
+  hd_run ask sc 'Read the code.'
+  assert_contains "$HD_OUT" "STATUS: blocked_ui"
+  assert_contains "$HD_OUT" "hook needs review"
+  assert_contains "$HD_OUT" "t trust all · enter review · esc close"
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_eq 0 "$(prompt_calls)" "agent prompt calls"
+  [[ ! -e "$XDG_CACHE_HOME/herdr-delegate/journal.jsonl" ]] || t_fail "blocked ask wrote a journal entry"
+}
+
+case_ask_codex_folder_trust() {
+  hd_run spawn sc scout --agent codex
+  assert_eq 0 "$HD_RC" "hd spawn codex scout"
+  mkdir -p "$FAKE_DIR/panes/p1"
+  printf '%s\n' 'Trust this folder?' > "$FAKE_DIR/panes/p1/screen"
+  hd_run ask sc 'Read the code.'
+  assert_contains "$HD_OUT" "STATUS: blocked_ui"
+  assert_contains "$HD_OUT" "Trust this folder?"
+  assert_eq 0 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_ask_pi_ignores_folder_trust() {
+  hd_run spawn w1 worker --agent pi
+  assert_eq 0 "$HD_RC" "hd spawn pi worker"
+  mkdir -p "$FAKE_DIR/panes/p1"
+  printf '%s\n' 'Trust this folder?' > "$FAKE_DIR/panes/p1/screen"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_not_contains "$HD_OUT" "blocked_ui"
+  assert_contains "$HD_OUT" "STATUS: done"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+run_case ask_codex_hook_review case_ask_codex_hook_review
+run_case ask_codex_folder_trust case_ask_codex_folder_trust
+run_case ask_pi_ignores_folder_trust case_ask_pi_ignores_folder_trust
+run_case ask_check_pipefail case_check_pipefail
+run_case ask_autofix_check_fixed case_autofix_check_fixed
+run_case ask_autofix_cap case_autofix_cap
+run_case ask_autofix_russian_status case_autofix_russian_status
+run_case ask_autofix_scope_outside case_autofix_scope_outside
+run_case ask_autofix_journal case_autofix_journal
+run_case ask_no_autofix_failed_status case_no_autofix_failed_status
 run_case ask_reply_check_scope case_reply_check_scope
 run_case ask_scope_outside_file case_scope_outside_file
 run_case ask_scope_directory_and_glob case_scope_directory_and_glob

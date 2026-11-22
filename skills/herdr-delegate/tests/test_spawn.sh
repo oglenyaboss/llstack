@@ -79,8 +79,29 @@ EOF
   assert_exists "$FAKE_DIR/agents/w1-abcd" "agent named with the md5 fallback tag"
 }
 
+case_codex_roles() {
+  hd_run spawn sc scout --agent codex --model gpt-x --thinking low
+  assert_eq 0 "$HD_RC" "hd spawn codex scout"
+  local scout_args=("$FAKE_DIR"/agents/sc-*/start.args)
+  assert_file_contains "${scout_args[0]}" "--kind codex"
+  assert_file_contains "${scout_args[0]}" "-s workspace-write"
+  assert_file_contains "${scout_args[0]}" "model_reasoning_effort=\"low\""
+
+  hd_run spawn w1 worker --agent codex --model gpt-x
+  assert_eq 0 "$HD_RC" "hd spawn codex worker"
+  local worker_args=("$FAKE_DIR"/agents/w1-*/start.args)
+  assert_file_contains "${worker_args[0]}" "-s danger-full-access"
+  assert_file_not_contains "${worker_args[0]}" "workspace-write"
+  assert_file_contains "${worker_args[0]}" "# Role: worker"
+
+  hd_run spawn sk sidekick --agent codex
+  assert_eq 1 "$HD_RC" "hd spawn codex sidekick"
+  assert_contains "$HD_OUT" "scout or worker only"
+}
+
 run_case spawn_model_and_thinking case_model_thinking
 run_case spawn_without_model_and_thinking case_no_model_thinking
 run_case spawn_extensions_and_scout case_extensions_and_scout
 run_case spawn_missing_cwd case_missing_cwd
 run_case spawn_md5_fallback case_md5_fallback
+run_case spawn_codex_roles case_codex_roles
