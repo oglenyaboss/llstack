@@ -38,7 +38,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
    - `done`: verify.
 5. **Verify.** Every claim in SUMMARY is **unverified** until you see its evidence. Done when:
    - writer: the `--- check` block under SUMMARY shows exit=0 and the expected output, the `--- scope` block shows 0 outside Scope, and you read `hd diff <name>` (exactly what this ask changed) against the brief: every R has its hunk, every Acceptance case its passing test unchanged from the brief, every hunk in scope, every called API exists, every assumption is one you would make;
-   - scout: 1–2 key file:line citations open to what the payload says; one mismatch makes the whole payload suspect;
+   - scout: the `--- claims` block shows 0 not found and 0 found in repo, and you open the `inferred:` claims your decision rests on;
    - researcher: each decision-critical claim is direct with high confidence, or you opened its source.
    Then record the **lesson**: for each `failed`, brief that contradicted the code, diff you rejected, or correction you sent, run `hd note <name> "<root cause in one line>"`.
 6. **Stop.** `hd stop` one-shot agents once accepted. Use context size from `hd ls` to choose a fresh agent for the next brief. Let the current brief finish; if a context limit actually prevents progress, hand off the evidence and all unfinished requirements to a fresh agent. `hd resume <name>` brings a stopped agent back with its context, model, and cwd, for a follow-up on the same task.
@@ -50,6 +50,8 @@ The assigned brief remains the completion criterion while waiting. Elapsed time,
 ## Briefs in hd
 
 Two fields of the brief are mechanical here. After the reply, `hd` runs Check in the agent's cwd (10 minute cap) and appends its exit code and output tail under `--- check`, and lists every changed file outside Scope under `--- scope`. Both apply to one ask: repeat them in every correction. The agent shows each Acceptance case red, then green, in SUMMARY. Check runs under pipefail: end it with the test command or pipe into `tail`, never `head`, whose early exit fails the pipe. When the agent reports done and Check fails or files changed outside Scope with no concurrent ask, hd sends the agent the failure, up to two rounds, and shows each round as a `--- autofix` line before the envelope.
+
+For a scout, hd also checks the payload: each cited quote must be in the file within three lines of the cited line, and each `ABSENT:` string must occur nowhere in the repository. Failures go back to the scout in the same autofix rounds and show under `--- claims`.
 
 ## Roles
 

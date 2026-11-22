@@ -17,6 +17,8 @@ Context: pointers: `path:line-range` for every fact that lives in a file, a patt
          ("as in foo.ts:40-60"), payload paths to read first; exact names of new functions and files.
 Decisions: D1..Dn, what you chose where the files leave a choice open.
 Requirements: R1..Rn, one observable behavior each; every item of the issue or spec is here.
+Removes: what the change takes away or replaces (a screen, a key, a route, a flag, a fallback), each with
+         an Acceptance case proving it is gone; "nothing" when nothing goes.
 Traps: where a plausible implementation goes wrong, with the correct shape: the check and
        the write it guards in one transaction (`SELECT … FOR UPDATE`), a second concurrent
        caller, the first/last/empty index, a repeat of the same request.

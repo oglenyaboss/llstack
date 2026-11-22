@@ -541,6 +541,112 @@ EOF
   assert_eq 1 "$(prompt_calls)" "agent prompt calls"
 }
 
+setup_claims() {
+  local role="${1:-scout}"
+  seq -f 'l%g' 1 10 > src/a.txt
+  hd_run spawn w1 "$role"
+  assert_eq 0 "$HD_RC" "hd spawn w1"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if [[ "$3" == 1 ]]; then
+  payload="$(payload_path "$1")"
+  printf '%s\n' "$payload" > "$FAKE_DIR/$1.payload"
+  printf '%s\n' "$CLAIMS_FIRST" > "$payload"
+elif [[ -v CLAIMS_NEXT ]]; then
+  printf '%s\n' "$CLAIMS_NEXT" > "$(cat "$FAKE_DIR/$1.payload")"
+fi
+turn "$2" 'STATUS: done'
+EOF
+}
+
+case_claims_c1() {
+  setup_claims
+  CLAIMS_FIRST='- `src/a.txt:5` — `l5`' hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found; 0 absent, 0 found in repo"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_c2() {
+  setup_claims
+  CLAIMS_FIRST='- `src/a.txt:2` — `l9`' CLAIMS_NEXT='- `src/a.txt:9` — `l9`' hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 1 not found"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found"
+  local prompt="$(single_agent_dir)/last-prompt"
+  assert_file_contains "$prompt" "src/a.txt:2"
+  assert_file_contains "$prompt" "not within 3 lines"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_c3() {
+  setup_claims
+  CLAIMS_FIRST='`src/a.txt:2` — `l5`
+`src/a.txt:2–3` — `l6`
+`src/missing.txt:1` — `x`' hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 3 cited, 1 not found; 0 absent, 0 found in repo"
+  assert_contains "$HD_OUT" 'src/missing.txt:1 `x`: no such file'
+  assert_contains "$HD_OUT" "--- autofix 2/2: claims: 1 not found"
+  assert_eq 3 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_c4() {
+  setup_claims
+  mkdir -p tests
+  printf 'callFoo()\n' > tests/x_test.go
+  git add tests/x_test.go
+  CLAIMS_FIRST='ABSENT: `callFoo(`' CLAIMS_NEXT='callFoo( occurs in tests/x_test.go:1, a test' hd_run ask w1 'Find callFoo.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 1 absent found"
+  assert_file_contains "$(single_agent_dir)/last-prompt" "tests/x_test.go:1"
+  assert_contains "$HD_OUT" "--- claims: 0 cited, 0 not found; 0 absent, 0 found in repo"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_c5() {
+  setup_claims
+  printf 'neverThere\n' > src/untracked.txt
+  CLAIMS_FIRST='ABSENT: `neverThere`' hd_run ask w1 'Find neverThere.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_not_contains "$HD_OUT" "--- autofix"
+  assert_contains "$HD_OUT" "--- claims: 0 cited, 0 not found; 1 absent, 0 found in repo"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_c6() {
+  setup_claims worker
+  CLAIMS_FIRST='- `src/a.txt:2` — `l9`' hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_not_contains "$HD_OUT" "--- claims"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_c7() {
+  setup_claims
+  CLAIMS_FIRST='- `src/a.txt:5` — `l5`' hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
+  assert_jq '.claims == {"cited":1,"bad":0,"absent":0,"found":0}' "$(tail -n 1 "$journal")" "scout journal"
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  CLAIMS_FIRST='- `src/a.txt:2` — `l9`' hd_run ask w2 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_jq 'has("claims") and .claims == null' "$(tail -n 1 "$journal")" "worker journal"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" 'STATUS: done'
+EOF
+  hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask without payload"
+  assert_not_contains "$HD_OUT" "--- claims"
+  assert_jq 'has("claims") and .claims == null' "$(tail -n 1 "$journal")" "scout journal without payload"
+}
+
 run_case ask_codex_hook_review case_ask_codex_hook_review
 run_case ask_codex_folder_trust case_ask_codex_folder_trust
 run_case ask_pi_ignores_folder_trust case_ask_pi_ignores_folder_trust
@@ -564,3 +670,29 @@ run_case ask_check_without_timeout case_check_without_timeout
 run_case ask_without_timeout_no_check case_ask_without_timeout_no_check
 run_case ask_check_without_backticks case_check_without_backticks
 run_case ask_concurrent case_concurrent_ask
+case_claims_multiline_quote() {
+  setup_claims
+  printf 'foo(\n  "bar")\n' > src/m.txt
+  CLAIMS_FIRST='- `src/m.txt:1-2` — `foo("bar")`' hd_run ask w1 'Read src/m.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_line_ref_quote() {
+  setup_claims
+  CLAIMS_FIRST='- `src/a.txt:5` — `:6`' hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 0 cited, 0 not found"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+run_case ask_claims_multiline_quote case_claims_multiline_quote
+run_case ask_claims_line_ref_quote case_claims_line_ref_quote
+run_case ask_claims_c1 case_claims_c1
+run_case ask_claims_c2 case_claims_c2
+run_case ask_claims_c3 case_claims_c3
+run_case ask_claims_c4 case_claims_c4
+run_case ask_claims_c5 case_claims_c5
+run_case ask_claims_c6 case_claims_c6
+run_case ask_claims_c7 case_claims_c7

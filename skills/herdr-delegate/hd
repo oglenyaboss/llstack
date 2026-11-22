@@ -510,24 +510,39 @@ settle_ask() {
     finish "$name" "$timeout"
     return
   fi
-  local check_block scope_block concurrent_block rounds=0 check_rc="" outside=""
+  local check_block scope_block claims_block concurrent_block rounds=0 check_rc="" outside=""
   local check_fail=0 outside_fail=0 reason="" msg scope_files
+  local cited=0 bad=0 absent=0 found=0 claims=null claims_reason= details=()
   check_block="$(run_check "$name")"
   scope_block="$(run_scope "$name")"
   concurrent_block="$(run_concurrent "$name")"
+  claims_block="$(run_claims "$name")"
+  if [[ -n "$claims_block" ]]; then
+    {
+      read -r cited bad absent found
+      mapfile -t details
+    } < "$rd/$name.claims"
+    claims="{\"cited\":$cited,\"bad\":$bad,\"absent\":$absent,\"found\":$found}"
+  fi
   if [[ -f "$rd/$name.autofix" ]]; then rounds="$(<"$rd/$name.autofix")"; fi
   [[ "$rounds" =~ ^[0-9]+$ ]] || rounds=0
   if [[ -f "$rd/$name.check-exit" ]]; then check_rc="$(<"$rd/$name.check-exit")"; fi
   if [[ -f "$rd/$name.outside" ]]; then outside="$(<"$rd/$name.outside")"; fi
   if [[ -n "$check_rc" && "$check_rc" != 0 ]]; then check_fail=1; fi
   if [[ -n "$outside" && ! -f "$rd/$name.concurrent" ]]; then outside_fail=1; fi
-  if reply_done "$name" && (( rounds < 2 )) && { (( check_fail )) || (( outside_fail )); }; then
+  if reply_done "$name" && (( rounds < 2 && (check_fail || outside_fail || bad || found) )); then
     rounds=$((rounds + 1))
     printf '%s\n' "$rounds" > "$rd/$name.autofix"
     if (( check_fail )); then reason="check exit=$check_rc"; fi
     if (( outside_fail )); then
       if [[ -n "$reason" ]]; then reason+="; "; fi
       reason+="outside Scope: ${outside//$'\n'/ }"
+    fi
+    if (( bad || found )); then
+      if (( bad )); then claims_reason="$bad not found"; fi
+      if (( bad && found )); then claims_reason+=", "; fi
+      if (( found )); then claims_reason+="$found absent found"; fi
+      reason+="${reason:+; }claims: $claims_reason"
     fi
     echo "--- autofix $rounds/2: $reason"
     msg="hd checked your turn and a gate failed."
@@ -538,6 +553,17 @@ settle_ask() {
     if (( outside_fail )); then
       scope_files="$(paste -sd' ' "$rd/$name.scope")"
       msg+=$'\n'"Files changed outside Scope: ${outside//$'\n'/ }. Scope: $scope_files. Revert those files; if the brief requires them, say so under QUESTION."
+    fi
+    if (( bad )); then
+      msg+=$'\n'"These citations in OUTPUT_FILE do not match the file:"
+      msg+=$'\n'"$(printf '%s\n' "${details[@]:0:bad}")"
+    fi
+    if (( found )); then
+      msg+=$'\n'"These ABSENT strings occur in the repository:"
+      msg+=$'\n'"$(printf '%s\n' "${details[@]:bad}")"
+    fi
+    if (( bad || found )); then
+      msg+=$'\n'"Correct each line number or quote, or drop the claim. For an ABSENT string that occurs, replace the ABSENT line with the occurrences and why each does not count."
     fi
     msg+=$'\n'"Fix it within the same brief and Scope, update OUTPUT_FILE $(cat "$rd/$name.out"), then end your turn with the report envelope."
     res="$(dispatch_prompt "$name" "$msg" "$timeout" autofix)" || retry_rc=$?
@@ -562,8 +588,9 @@ settle_ask() {
   print_result "$name"
   if [[ -n "$check_block" ]]; then printf '%s\n' "$check_block"; fi
   if [[ -n "$scope_block" ]]; then printf '%s\n' "$scope_block"; fi
+  if [[ -n "$claims_block" ]]; then printf '%s\n' "$claims_block"; fi
   if [[ -n "$concurrent_block" ]]; then printf '%s\n' "$concurrent_block"; fi
-  journal_ask "$name"
+  journal_ask "$name" "$claims"
 }
 
 run_check() {
@@ -602,6 +629,87 @@ run_scope() {
   [[ ${#outside[@]} -eq 0 ]] || printf '%s\n' "${outside[@]}"
 }
 
+claim_matches() {
+  local in_git="$1" string="$2" path number rest count=0
+  if [[ "$in_git" == true ]]; then
+    while (( count < 10 )) && IFS= read -r -d '' path && IFS= read -r -d '' number && IFS= read -r rest; do
+      printf '%s:%s\n' "$path" "$number"
+      count=$((count + 1))
+    done < <(git grep -n -I -F -z -e "$string")
+  else
+    while (( count < 10 )) && IFS= read -r -d '' path && IFS= read -r rest; do
+      printf '%s:%s\n' "$path" "${rest%%:*}"
+      count=$((count + 1))
+    done < <(grep -rnIF -Z --exclude-dir=.git -e "$string" .)
+  fi
+}
+
+run_claims() {
+  local name="$1" rd out cwd in_git line rest cite path start end quote normalized window reason string
+  local cited=0 bad=0 absent=0 found=0 bad_lines=() found_lines=() preview=() matches=() match i
+  local token='`([^`]*)`' location='^(.+):([0-9]+)((-|–)([0-9]+))?$'
+  local quoted='^[[:space:]]*(—|–|-|:|·)[[:space:]]*`([^`]*)`'
+  local missing='ABSENT:[[:blank:]]+`([^`]+)`'
+  local trim='s/[[:space:]]+//g' lineref='^:?[0-9]+((-|–)[0-9]+)?$'
+  rd="$(run_dir)"
+  rm -f "$rd/$name.claims"
+  [[ "$(cat "$rd/$name.role" 2>/dev/null || true)" == scout ]] || return 0
+  out="$(cat "$rd/$name.out" 2>/dev/null || true)"
+  [[ -f "$out" ]] || return 0
+  cwd="$(agent_cwd "$name")"
+  in_git="$(git -C "$cwd" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    rest="$line"
+    while [[ "$rest" =~ $token ]]; do
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+      cite="${BASH_REMATCH[1]}"
+      [[ "$cite" =~ $location ]] || continue
+      path="${BASH_REMATCH[1]}" start="${BASH_REMATCH[2]}" end="${BASH_REMATCH[5]:-${BASH_REMATCH[2]}}"
+      [[ "$rest" =~ $quoted ]] || continue
+      quote="${BASH_REMATCH[2]}"
+      rest="${rest#"${BASH_REMATCH[0]}"}"
+      [[ "$quote" =~ $lineref ]] && continue
+      cited=$((cited + 1))
+      [[ "$path" == /* ]] || path="$cwd/$path"
+      if [[ ! -f "$path" ]]; then
+        reason="no such file"
+      else
+        normalized="$(sed -E "s/(\.\.\.|…)[[:space:]]*$//; $trim" <<<"$quote")"
+        window="$(awk -v start="$start" -v end="$end" '
+          NR > end + 3 { exit }
+          NR >= start - 3 { printf "%s ", $0 }
+        ' < "$path" | sed -E "$trim")"
+        [[ -n "$window" && "$window" == *"$normalized"* ]] && continue
+        reason="not within 3 lines"
+      fi
+      bad=$((bad + 1))
+      bad_lines+=("  $cite \`$quote\`: $reason")
+    done
+    rest="$line"
+    while [[ "$rest" =~ $missing ]]; do
+      string="${BASH_REMATCH[1]}"
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+      absent=$((absent + 1))
+      mapfile -t matches < <(cd "$cwd" && claim_matches "$in_git" "$string")
+      (( ${#matches[@]} )) || continue
+      found=$((found + 1))
+      match="  ABSENT \`$string\`: ${matches[0]}"
+      for ((i=1; i<${#matches[@]}; i++)); do
+        if (( i == 5 )); then preview+=("$match"); fi
+        match+=", ${matches[i]}"
+      done
+      if (( i <= 5 )); then preview+=("$match"); fi
+      found_lines+=("$match")
+    done
+  done < "$out"
+  {
+    printf '%s %s %s %s\n' "$cited" "$bad" "$absent" "$found"
+    if (( bad || found )); then printf '%s\n' "${bad_lines[@]}" "${found_lines[@]}"; fi
+  } > "$rd/$name.claims"
+  printf -- '--- claims: %s cited, %s not found; %s absent, %s found in repo\n' "$cited" "$bad" "$absent" "$found"
+  if (( bad || found )); then printf '%s\n' "${bad_lines[@]:0:10}" "${preview[@]}"; fi
+}
+
 tree_root() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || echo "$1"; }
 
 run_concurrent() {
@@ -625,7 +733,7 @@ run_concurrent() {
 journal_lines() { if [[ -f "$1" ]]; then jq -Rn '[inputs]' < "$1"; else echo '[]'; fi; }
 
 journal_ask() {
-  local name="$1" rd out cwd autofix
+  local name="$1" claims="$2" rd out cwd autofix
   rd="$(run_dir)"
   out="$(cat "$rd/$name.out" 2>/dev/null || true)"
   cwd="$(agent_cwd "$name")"
@@ -637,6 +745,7 @@ journal_ask() {
     --arg brief "${out%.md}.brief" --arg payload "$out" \
     --arg status "$(reply_text "$name" | grep -m1 -E 'STATUS' || true)" \
     --argjson autofix "$autofix" \
+    --argjson claims "$claims" \
     --arg head "$(cat "$rd/$name.head" 2>/dev/null || true)" \
     --arg base "$(cat "$rd/$name.base" 2>/dev/null || true)" \
     --arg check "$(cat "$rd/$name.check" 2>/dev/null || true)" \
@@ -648,7 +757,7 @@ journal_ask() {
     --arg ctx "$(agent_ctx "$name")" \
     '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
       status: $status, autofix: $autofix, head: $head, base: $base, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
-      ctx: $ctx, brief: $brief, payload: $payload}' >> "$JOURNAL"
+      ctx: $ctx, brief: $brief, payload: $payload, claims: $claims}' >> "$JOURNAL"
 }
 
 cmd_note() {
