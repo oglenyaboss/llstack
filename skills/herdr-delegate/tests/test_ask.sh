@@ -696,3 +696,152 @@ run_case ask_claims_c4 case_claims_c4
 run_case ask_claims_c5 case_claims_c5
 run_case ask_claims_c6 case_claims_c6
 run_case ask_claims_c7 case_claims_c7
+write_red_hook() {
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+mkdir -p tests
+if [[ "${RED_TEST_ONLY:-}" != 1 ]]; then
+  printf 'hello\n' > src/impl.txt
+fi
+if [[ "${RED_FIRST_PASS:-}" == 1 && "$3" == 1 || "${RED_TEST_ONLY:-}" == 1 ]]; then
+  printf 'true\n' > tests/check.sh
+else
+  printf 'grep -q hello src/impl.txt\n' > tests/check.sh
+fi
+turn "$2" "STATUS: ${RED_STATUS:-done}"
+EOF
+}
+
+ask_red() {
+  hd_run ask w1 $'Do the work.\n\nCheck: `bash tests/check.sh`'"$1"
+  assert_eq 0 "$HD_RC" "hd ask"
+}
+
+case_red_added() {
+  spawn_w1
+  write_red_hook
+  ask_red ""
+  assert_contains "$HD_OUT" "--- red: Check exit=2 with 1 implementation files"
+  assert_after "$HD_OUT" "--- check: bash tests/check.sh" "exit=0"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+  assert_eq hello "$(cat src/impl.txt)" "restored implementation"
+  [[ ! -e "$XDG_CACHE_HOME/herdr-delegate/test_p0/w1.red" ]] || t_fail "red backup remains"
+}
+
+case_red_autofix() {
+  spawn_w1
+  export RED_FIRST_PASS=1
+  write_red_hook
+  ask_red ""
+  assert_contains "$HD_OUT" "--- autofix 1/2: red: tests pass without the implementation"
+  assert_contains "$HD_OUT" "--- red: Check exit=2"
+  assert_file_contains "$(single_agent_dir)/last-prompt" "src/impl.txt"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_red_modified() {
+  printf 'old\n' > src/impl.txt
+  git add src/impl.txt
+  git -c user.name=test -c user.email=test@example.com commit -qm implementation
+  spawn_w1
+  write_red_hook
+  ask_red ""
+  assert_contains "$HD_OUT" "--- red: Check exit=1 with 1 implementation files"
+  assert_eq hello "$(cat src/impl.txt)" "restored implementation"
+}
+
+case_red_skip() {
+  spawn_w1
+  export RED_FIRST_PASS=1
+  write_red_hook
+  ask_red $'\nRed: skip'
+  assert_not_contains "$HD_OUT" "--- red"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_red_test_only() {
+  spawn_w1
+  export RED_TEST_ONLY=1
+  write_red_hook
+  ask_red ""
+  assert_not_contains "$HD_OUT" "--- red"
+}
+
+case_red_failed_status() {
+  spawn_w1
+  export RED_STATUS=failed
+  write_red_hook
+  ask_red ""
+  assert_not_contains "$HD_OUT" "--- red"
+}
+
+case_red_interrupted() {
+  spawn_w1
+  local red="$XDG_CACHE_HOME/herdr-delegate/test_p0/w1.red"
+  mkdir -p "$red/files/src"
+  printf 'modified\tsrc/impl.txt\n' > "$red/list"
+  printf 'saved\n' > "$red/files/src/impl.txt"
+  printf 'base\n' > src/impl.txt
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+mkdir -p tests
+printf 'true\n' > tests/check.sh
+cp src/impl.txt src/seen.txt
+turn "$2" "STATUS: failed"
+EOF
+  ask_red ""
+  assert_contains "$HD_OUT" "hd: restored 1 files from an interrupted red run"
+  assert_eq saved "$(cat src/seen.txt)" "implementation seen by worker"
+}
+
+case_red_error() {
+  printf 'old\n' > src/impl.txt
+  git add src/impl.txt
+  git -c user.name=test -c user.email=test@example.com commit -qm implementation
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+mkdir -p tests
+printf 'true\n' > tests/check.sh
+rm src/impl.txt
+mkdir src/impl.txt
+printf 'x\n' > src/impl.txt/a
+turn "$2" "STATUS: done"
+EOF
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
+  ask_red ""
+  assert_contains "$HD_OUT" "STATUS: done"
+  assert_contains "$HD_OUT" "--- red: error exit=1"
+  assert_contains "$HD_OUT" "cannot revert directory src/impl.txt as a file"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+  assert_eq x "$(cat src/impl.txt/a)" "worker tree kept"
+  assert_jq '.red_exit == null' "$(tail -n 1 "$journal")"
+}
+
+case_red_journal() {
+  spawn_w1
+  write_red_hook
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
+  ask_red ""
+  assert_jq '.red_exit == 2' "$(tail -n 1 "$journal")"
+  export RED_TEST_ONLY=1
+  rm tests/check.sh
+  ask_red ""
+  assert_jq 'has("red_exit") and .red_exit == null' "$(tail -n 1 "$journal")"
+}
+
+run_case ask_red_added case_red_added
+run_case ask_red_autofix case_red_autofix
+run_case ask_red_modified case_red_modified
+run_case ask_red_skip case_red_skip
+run_case ask_red_test_only case_red_test_only
+run_case ask_red_failed_status case_red_failed_status
+run_case ask_red_interrupted case_red_interrupted
+run_case ask_red_journal case_red_journal
+run_case ask_red_error case_red_error

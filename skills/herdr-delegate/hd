@@ -365,8 +365,9 @@ cmd_ask() {
   if [[ "$brief" == @* ]]; then
     brief="$(cat "${brief#@}")"
   fi
-  local check
+  local check red_field
   check="$(sed -n '/^Check:/{s/^Check:[[:space:]]*//;s/^`\([^`]*\)`.*/\1/;s/[[:space:]]*$//;p;q;}' <<<"$brief")"
+  red_field="$(sed -n '/^Red:/{s/^Red:[[:space:]]*//;s/^`\([^`]*\)`.*/\1/;s/[[:space:]]*$//;p;q;}' <<<"$brief")"
   [[ -z "$check" || -n "$CHECK_TIMEOUT" ]] || die "Check needs timeout or gtimeout (macOS: brew install coreutils)"
 
   if [[ "$name" == sk ]] && ! agent_json sk >/dev/null 2>&1; then
@@ -391,8 +392,13 @@ cmd_ask() {
     die "$name has an ask in flight; continue with: hd wait $name"
   fi
 
-  local rd role seq out session head_commit
+  local rd role seq out session head_commit restored root
   rd="$(run_dir)"
+  if [[ -f "$rd/$name.red/list" ]]; then
+    root="$(git -C "$(agent_cwd "$name")" rev-parse --show-toplevel)"
+    restored="$(restore_red "$root" "$rd/$name.red")"
+    printf "hd: restored %s files from an interrupted red run\n" "$restored"
+  fi
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
   out="$rd/$name-$(printf '%02d' "$seq").md"
@@ -407,6 +413,11 @@ cmd_ask() {
   echo "$out" > "$rd/$name.out"
   printf '%s\n' "$brief" > "${out%.md}.brief"
   printf '%s' "$check" > "$rd/$name.check"
+  if [[ "$red_field" == skip ]]; then
+    touch "$rd/$name.red-skip"
+  else
+    rm -f "$rd/$name.red-skip"
+  fi
   sed -n '/^Scope:/{p;q;}' <<<"$brief" | grep -o '`[^`]*`' | tr -d '`' | sed 's|^\./||' > "$rd/$name.scope" || true
   snapshot_tree "$(agent_cwd "$name")" > "$rd/$name.base" || rm -f "$rd/$name.base"
   date +%s > "$rd/$name.ask-start"
@@ -510,13 +521,21 @@ settle_ask() {
     finish "$name" "$timeout"
     return
   fi
-  local check_block scope_block claims_block concurrent_block rounds=0 check_rc="" outside=""
-  local check_fail=0 outside_fail=0 reason="" msg scope_files
+  local check_block scope_block claims_block concurrent_block red_block red_files rounds=0 check_rc="" outside=""
+  local check_fail=0 outside_fail=0 red_fail=0 red_rc=0 reason="" msg scope_files
   local cited=0 bad=0 absent=0 found=0 claims=null claims_reason= details=()
   check_block="$(run_check "$name")"
   scope_block="$(run_scope "$name")"
   concurrent_block="$(run_concurrent "$name")"
   claims_block="$(run_claims "$name")"
+  set +e
+  red_block="$(set -e; run_red "$name" 2>&1)"
+  red_rc=$?
+  set -e
+  if (( red_rc )); then
+    rm -f "$rd/$name.red-exit"
+    red_block="--- red: error exit=$red_rc"$'\n'"$red_block"
+  fi
   if [[ -n "$claims_block" ]]; then
     {
       read -r cited bad absent found
@@ -530,7 +549,8 @@ settle_ask() {
   if [[ -f "$rd/$name.outside" ]]; then outside="$(<"$rd/$name.outside")"; fi
   if [[ -n "$check_rc" && "$check_rc" != 0 ]]; then check_fail=1; fi
   if [[ -n "$outside" && ! -f "$rd/$name.concurrent" ]]; then outside_fail=1; fi
-  if reply_done "$name" && (( rounds < 2 && (check_fail || outside_fail || bad || found) )); then
+  if [[ -f "$rd/$name.red-exit" && "$(<"$rd/$name.red-exit")" == 0 ]]; then red_fail=1; fi
+  if reply_done "$name" && (( rounds < 2 && (check_fail || outside_fail || bad || found || red_fail) )); then
     rounds=$((rounds + 1))
     printf '%s\n' "$rounds" > "$rd/$name.autofix"
     if (( check_fail )); then reason="check exit=$check_rc"; fi
@@ -543,6 +563,9 @@ settle_ask() {
       if (( bad && found )); then claims_reason+=", "; fi
       if (( found )); then claims_reason+="$found absent found"; fi
       reason+="${reason:+; }claims: $claims_reason"
+    fi
+    if (( red_fail )); then
+      reason+="${reason:+; }red: tests pass without the implementation"
     fi
     echo "--- autofix $rounds/2: $reason"
     msg="hd checked your turn and a gate failed."
@@ -564,6 +587,10 @@ settle_ask() {
     fi
     if (( bad || found )); then
       msg+=$'\n'"Correct each line number or quote, or drop the claim. For an ABSENT string that occurs, replace the ABSENT line with the occurrences and why each does not count."
+    fi
+    if (( red_fail )); then
+      red_files="${red_block#--- red: Check passes with the implementation reverted: }"
+      msg+=$'\n'"Check passes with your implementation files reverted to their state at the start of this ask: $red_files. The Acceptance tests must fail without the change: make them exercise the new behavior, keep each case as the brief gives it, and say under QUESTION if a case cannot fail without the change."
     fi
     msg+=$'\n'"Fix it within the same brief and Scope, update OUTPUT_FILE $(cat "$rd/$name.out"), then end your turn with the report envelope."
     res="$(dispatch_prompt "$name" "$msg" "$timeout" autofix)" || retry_rc=$?
@@ -587,6 +614,7 @@ settle_ask() {
   fi
   print_result "$name"
   if [[ -n "$check_block" ]]; then printf '%s\n' "$check_block"; fi
+  if [[ -n "$red_block" ]]; then printf '%s\n' "$red_block"; fi
   if [[ -n "$scope_block" ]]; then printf '%s\n' "$scope_block"; fi
   if [[ -n "$claims_block" ]]; then printf '%s\n' "$claims_block"; fi
   if [[ -n "$concurrent_block" ]]; then printf '%s\n' "$concurrent_block"; fi
@@ -613,7 +641,7 @@ run_scope() {
   base="$(cat "$rd/$name.base" 2>/dev/null || true)"
   [[ -n "$base" ]] || return 0
   cwd="$(agent_cwd "$name")"
-  mapfile -t changed < <(git -C "$cwd" diff --name-only "$base" "$(snapshot_tree "$cwd")")
+  mapfile -t changed < <(git -C "$cwd" -c core.quotePath=false diff --no-renames --name-only "$base" "$(snapshot_tree "$cwd")")
   printf '%s\n' "${changed[@]}" | sed '/^$/d' > "$rd/$name.changed"
   [[ -s "$rd/$name.scope" ]] || return 0
   mapfile -t scope < "$rd/$name.scope"
@@ -627,6 +655,132 @@ run_scope() {
   printf '%s\n' "${outside[@]}" | sed '/^$/d' > "$rd/$name.outside"
   printf -- '--- scope: %s changed, %s outside Scope\n' "${#changed[@]}" "${#outside[@]}"
   [[ ${#outside[@]} -eq 0 ]] || printf '%s\n' "${outside[@]}"
+}
+
+restore_red() {
+  local root="$1" red="$2" entry kind path backup count=0 failed=0
+  while IFS= read -r entry; do
+    kind="${entry%%$'\t'*}"
+    path="${entry#*$'\t'}"
+    backup="$red/files/$path"
+    case "$kind" in
+      modified|added)
+        if [[ ! -f "$backup" && ! -L "$backup" ]] ||
+          ! mkdir -p -- "$root/$(dirname -- "$path")" || ! rm -f -- "$root/$path" ||
+          ! cp -pP -- "$backup" "$root/$path"; then
+          failed=1
+          continue
+        fi
+        if [[ -L "$backup" ]]; then
+          [[ -L "$root/$path" ]] &&
+            cmp -s <(readlink -- "$backup") <(readlink -- "$root/$path") || failed=1
+        else
+          cmp -s -- "$backup" "$root/$path" || failed=1
+        fi
+        ;;
+      deleted)
+        rm -f -- "$root/$path" || failed=1
+        ;;
+    esac
+    count=$((count + 1))
+  done < "$red/list"
+  if (( failed )); then
+    printf -- '--- red: WARNING restore mismatch, backups in %s\n' "$red" >&2
+    return 1
+  fi
+  rm -rf -- "$red" || return 1
+  printf '%s\n' "$count"
+}
+
+# ponytail: red runs the whole Check; per-case red needs a test selector per Acceptance case
+run_red() {
+  local name="$1" rd cwd root base red entry path mode kind parent ancestor check out rc=0 tests=0 target
+  local files=()
+  rd="$(run_dir)"
+  red="$rd/$name.red"
+  rm -f "$rd/$name.red-exit" "$rd/$name.red-out"
+  [[ "$(cat "$rd/$name.role" 2>/dev/null || true)" == worker &&
+     "$(cat "$rd/$name.check-exit" 2>/dev/null || true)" == 0 &&
+     ! -e "$rd/$name.concurrent" && ! -e "$rd/$name.red-skip" &&
+     -s "$rd/$name.changed" ]] || return 0
+  reply_done "$name" || return 0
+  while IFS= read -r path; do
+    case "/${path%/*}/" in
+      */test/*|*/tests/*|*/__tests__/*|*/spec/*|*/testdata/*)
+        if [[ "$path" == */* ]]; then tests=1; continue; fi
+        ;;
+    esac
+    case "${path##*/}" in
+      *_test.*|*.test.*|*.spec.*|test_*|*Test.*|*Tests.*) tests=1 ;;
+      *) files+=("$path") ;;
+    esac
+  done < "$rd/$name.changed"
+  (( tests && ${#files[@]} )) || return 0
+
+  cwd="$(agent_cwd "$name")"
+  root="$(git -C "$cwd" rev-parse --show-toplevel)"
+  base="$(<"$rd/$name.base")"
+  check="$(<"$rd/$name.check")"
+  [[ ! -e "$red/list" ]] || die "interrupted red run at $red"
+  (
+    trap 'if [[ -f "$red/list" ]]; then restore_red "$root" "$red" >/dev/null || exit 1; else rm -rf -- "$red"; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    rm -rf -- "$red"
+    mkdir -p -- "$red"
+    : > "$red/pending"
+    for path in "${files[@]}"; do
+      parent="$(dirname -- "$path")"
+      ancestor="$parent"
+      while [[ "$ancestor" != . ]]; do
+        [[ ! -L "$root/$ancestor" ]] || die "cannot revert $path through symlink $ancestor"
+        ancestor="$(dirname -- "$ancestor")"
+      done
+      [[ ! -d "$root/$path" || -L "$root/$path" ]] || die "cannot revert directory $path as a file"
+      mode="$(git -C "$root" ls-tree "$base" -- ":(literal)$path" | cut -d' ' -f1)"
+      case "$mode" in
+        '') kind=added ;;
+        100644|100755|120000)
+          kind=deleted
+          if [[ -f "$root/$path" || -L "$root/$path" ]]; then kind=modified; fi
+          mkdir -p -- "$red/base/$parent"
+          if [[ "$mode" == 120000 ]]; then
+            target="$(git -C "$root" cat-file blob "$base:$path" && printf .)"
+            ln -s -- "${target%.}" "$red/base/$path"
+          else
+            git -C "$root" cat-file blob "$base:$path" > "$red/base/$path"
+            chmod "${mode: -3}" "$red/base/$path"
+          fi
+          ;;
+        *) die "cannot revert $path with git mode $mode" ;;
+      esac
+      if [[ "$kind" != deleted ]]; then
+        mkdir -p -- "$red/files/$parent"
+        cp -pP -- "$root/$path" "$red/files/$path"
+      fi
+      printf '%s\t%s\n' "$kind" "$path" >> "$red/pending"
+    done
+    mv -- "$red/pending" "$red/list"
+    while IFS= read -r entry; do
+      kind="${entry%%$'\t'*}"
+      path="${entry#*$'\t'}"
+      rm -f -- "$root/$path"
+      if [[ "$kind" != added ]]; then
+        mkdir -p -- "$root/$(dirname -- "$path")"
+        cp -pP -- "$red/base/$path" "$root/$path"
+      fi
+    done < "$red/list"
+
+    out="$(cd "$cwd" && "$CHECK_TIMEOUT" 600 bash -o pipefail -c "$check" 2>&1)" || rc=$?
+    printf '%s\n' "$out" > "$rd/$name.red-out"
+    printf '%s\n' "$rc" > "$rd/$name.red-exit"
+  )
+  if (( $(<"$rd/$name.red-exit") )); then
+    printf -- "--- red: Check exit=%s with %s implementation files at the ask's start\n" "$(<"$rd/$name.red-exit")" "${#files[@]}"
+  else
+    printf -- '--- red: Check passes with the implementation reverted: %s\n' "${files[*]}"
+  fi
 }
 
 claim_matches() {
@@ -750,6 +904,7 @@ journal_ask() {
     --arg base "$(cat "$rd/$name.base" 2>/dev/null || true)" \
     --arg check "$(cat "$rd/$name.check" 2>/dev/null || true)" \
     --arg check_exit "$(cat "$rd/$name.check-exit" 2>/dev/null || true)" \
+    --argjson red_exit "$(cat "$rd/$name.red-exit" 2>/dev/null || echo null)" \
     --argjson scope "$(journal_lines "$rd/$name.scope")" \
     --argjson changed "$(journal_lines "$rd/$name.changed")" \
     --argjson outside "$(journal_lines "$rd/$name.outside")" \
@@ -757,7 +912,7 @@ journal_ask() {
     --arg ctx "$(agent_ctx "$name")" \
     '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
       status: $status, autofix: $autofix, head: $head, base: $base, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
-      ctx: $ctx, brief: $brief, payload: $payload, claims: $claims}' >> "$JOURNAL"
+      ctx: $ctx, brief: $brief, payload: $payload, claims: $claims, red_exit: $red_exit}' >> "$JOURNAL"
 }
 
 cmd_note() {
