@@ -135,21 +135,34 @@ snapshot_tree() {
   rm -f "$idx"
 }
 
+agent_workspace() {
+  local cwd="$1" lead top ws=""
+  lead="${HERDR_WORKSPACE_ID:-$(herdr pane get "$HERDR_PANE_ID" | jq -r .result.pane.workspace_id)}"
+  if top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"; then
+    ws="$(herdr workspace list 2>/dev/null | jq -r --arg top "$top" --arg lead "$lead" '
+      [.result.workspaces[] | select(.worktree.checkout_path == $top) | .workspace_id]
+      | if any(.[]; . == $lead) then $lead else (.[0] // empty) end' 2>/dev/null || true)"
+  fi
+  echo "${ws:-$lead}"
+}
+
 place_pane() {
-  local rd="$1" cwd="$2" tab anchor count dir res ws
-  tab="$(cat "$rd/tab" 2>/dev/null || true)"
-  if [[ -n "$tab" ]] && count="$(herdr tab get "$tab" 2>/dev/null | jq -r .result.tab.pane_count)"; then
-    anchor="$(cat "$rd/last-pane" 2>/dev/null || true)"
-    if [[ "$(herdr pane get "$anchor" 2>/dev/null | jq -r .result.pane.tab_id)" != "$tab" ]]; then
-      anchor="$(herdr pane list --workspace "${tab%%:*}" | jq -r --arg t "$tab" '[.result.panes[] | select(.tab_id == $t)] | last | .pane_id')"
-    fi
-    dir=right; (( count % 2 == 0 )) && dir=down
+  local rd="$1" cwd="$2" ws tab_file tab slot="" anchor dir res
+  ws="$(agent_workspace "$cwd")"
+  tab_file="$rd/tab-$ws"
+  tab="$(cat "$tab_file" 2>/dev/null || true)"
+  [[ -z "$tab" ]] || slot="$(herdr pane list --workspace "$ws" 2>/dev/null | jq -r --arg t "$tab" '
+    [.result.panes[] | select(.tab_id == $t)]
+    | if length == 1 then "\(.[0].pane_id) right"
+      elif length == 2 or length == 3 then "\(sort_by(-(.scroll.viewport_rows // 0))[0].pane_id) down"
+      else empty end' 2>/dev/null || true)"
+  if [[ -n "$slot" ]]; then
+    read -r anchor dir <<<"$slot"
     herdr pane split --pane "$anchor" --direction "$dir" --cwd "$cwd" --no-focus | jq -r .result.pane.pane_id
     return
   fi
-  ws="${HERDR_WORKSPACE_ID:-$(herdr pane get "$HERDR_PANE_ID" | jq -r .result.pane.workspace_id)}"
   res="$(herdr tab create --workspace "$ws" --cwd "$cwd" --label "agents $(basename "$PWD")" --no-focus)"
-  jq -r .result.tab.tab_id <<<"$res" > "$rd/tab"
+  jq -r .result.tab.tab_id <<<"$res" > "$tab_file"
   jq -r .result.root_pane.pane_id <<<"$res"
 }
 
@@ -219,7 +232,6 @@ $(awk -v s="${model##*/}" 'NR > 1 && index($2, s) { print "  " $1 "/" $2 }' <<<"
 
 record_spawn() {
   local rd="$1" pane="$2" name="$3" role="$4" kind="$5" model="$6" cwd="$7"
-  echo "$pane" > "$rd/last-pane"
   echo "$role" > "$rd/$name.role"
   echo "$kind" > "$rd/$name.agent"
   if [[ -n "$model" ]]; then echo "$model" > "$rd/$name.model"; else rm -f "$rd/$name.model"; fi

@@ -156,11 +156,12 @@ pane() {
       jq -nc --arg pane "$pane" '{result:{pane:{pane_id:$pane,tab_id:"w1:t1",workspace_id:"w1"}}}'
       ;;
     split)
-      local anchor="" seq dir
+      local anchor="" direction=right seq dir rows
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --pane) anchor="$2"; shift 2 ;;
-          --direction|--cwd|--ratio|--env|--right-click) shift 2 ;;
+          --direction) direction="$2"; shift 2 ;;
+          --cwd|--ratio|--env|--right-click) shift 2 ;;
           --no-focus|--focus) shift ;;
           *) shift ;;
         esac
@@ -170,10 +171,35 @@ pane() {
       printf '%s' "$seq" > "$FAKE_DIR/pane-seq"
       dir="$(pane_dir "p$seq")"
       mkdir -p "$dir"
-      jq -nc --arg pane "p$seq" '{result:{pane:{pane_id:$pane,tab_id:"w1:t1"}}}'
+      rows="$(cat "$(pane_dir "$anchor")/rows" 2>/dev/null || echo 52)"
+      if [[ "$direction" == down ]]; then
+        rows=$(( rows / 2 ))
+        printf '%s' "$rows" > "$(pane_dir "$anchor")/rows"
+        printf '%s' "$anchor" > "$dir/below"
+      fi
+      printf '%s' "$rows" > "$dir/rows"
+      local tab_file tab=w1:t1
+      tab_file="$(grep -lx -- "$anchor" "$FAKE_DIR"/tabs/* 2>/dev/null | head -n 1)"
+      if [[ -n "$tab_file" ]]; then
+        printf 'p%s\n' "$seq" >> "$tab_file"
+        tab="$(basename "$tab_file")"
+      fi
+      jq -nc --arg pane "p$seq" --arg tab "$tab" '{result:{pane:{pane_id:$pane,tab_id:$tab}}}'
       ;;
     list)
-      printf '%s\n' '{"result":{"panes":[{"pane_id":"p1","tab_id":"w1:t1"}]}}'
+      if [[ -d "$FAKE_DIR/tabs" ]]; then
+        local tab_file listed
+        for tab_file in "$FAKE_DIR"/tabs/*; do
+          while IFS= read -r listed; do
+            [[ -f "$(pane_dir "$listed")/closed" ]] && continue
+            jq -nc --arg pane "$listed" --arg tab "$(basename "$tab_file")" \
+              --argjson rows "$(cat "$(pane_dir "$listed")/rows" 2>/dev/null || echo 52)" \
+              '{pane_id:$pane,tab_id:$tab,scroll:{viewport_rows:$rows}}'
+          done < "$tab_file"
+        done | jq -sc '{result:{panes:.}}'
+      else
+        printf '%s\n' '{"result":{"panes":[{"pane_id":"p1","tab_id":"w1:t1"}]}}'
+      fi
       ;;
     read)
       local pane="${1:-}"
@@ -282,9 +308,11 @@ pane() {
       : > "$(pane_dir "$pane")/released"
       ;;
     close)
-      local pane="${1:-}"
+      local pane="${1:-}" above
       mkdir -p "$(pane_dir "$pane")"
       : > "$(pane_dir "$pane")/closed"
+      above="$(cat "$(pane_dir "$pane")/below" 2>/dev/null || true)"
+      [[ -z "$above" ]] || printf '%s' $(( $(<"$(pane_dir "$above")/rows") * 2 )) > "$(pane_dir "$above")/rows"
       ;;
     *) ;;
   esac
@@ -294,10 +322,21 @@ tab() {
   local sub="${1:-}"
   case "$sub" in
     create)
-      local dir; dir="$(pane_dir p1)"
-      mkdir -p "$dir"
-      [[ -f "$FAKE_DIR/pane-seq" ]] || printf '1' > "$FAKE_DIR/pane-seq"
-      printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"p1"}}}'
+      shift
+      local ws=w1 seq=1 tab count
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --workspace) ws="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      [[ -f "$FAKE_DIR/pane-seq" ]] && seq=$(( $(<"$FAKE_DIR/pane-seq") + 1 ))
+      printf '%s' "$seq" > "$FAKE_DIR/pane-seq"
+      mkdir -p "$(pane_dir "p$seq")" "$FAKE_DIR/tabs"
+      count="$(find "$FAKE_DIR/tabs" -name "$ws:t*" | wc -l)"
+      tab="$ws:t$(( count + 1 ))"
+      printf 'p%s\n' "$seq" > "$FAKE_DIR/tabs/$tab"
+      jq -nc --arg tab "$tab" --arg pane "p$seq" '{result:{tab:{tab_id:$tab},root_pane:{pane_id:$pane}}}'
       ;;
     get) printf '%s\n' '{"result":{"tab":{"pane_count":1}}}' ;;
     *) ;;
@@ -308,5 +347,8 @@ case "$cmd" in
   agent) agent "$@" ;;
   pane) pane "$@" ;;
   tab) tab "$@" ;;
+  workspace)
+    if [[ "${1:-}" == list && -f "$FAKE_DIR/workspaces.json" ]]; then cat "$FAKE_DIR/workspaces.json"; fi
+    ;;
   *) ;;
 esac
