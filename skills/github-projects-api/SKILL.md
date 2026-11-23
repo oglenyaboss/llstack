@@ -1,6 +1,6 @@
 ---
 name: github-projects-api
-description: Use when reading or editing a GitHub Projects v2 board through gh GraphQL: fields, items, views, and their known limits.
+description: "Use when reading or editing a GitHub Projects v2 board through gh GraphQL: fields, items, views, and their known limits."
 ---
 
 # GitHub Projects v2 through `gh`
