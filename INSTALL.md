@@ -9,6 +9,7 @@ Collect, read-only:
 - OS: `uname -s`.
 - Tools: `bash -c 'echo $BASH_VERSION'` (the `bash` on PATH), `git --version`, `jq --version`, `node --version`, `gh auth status` (no other `gh` calls), and on macOS whether `timeout` or `gtimeout` is on PATH.
 - Agents: which of `claude`, `codex`, `pi` are on PATH. Config directories: Claude Code `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` plus every other `$HOME/.claude*` directory with a `settings.json` (each is a profile), Codex `~/.codex`, pi `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}`. For each, note which of `skills/`, `settings.json`, `CLAUDE.md` or `AGENTS.md` are symlinks and where they point.
+- Skill directories: `~/.agents/skills` (Codex and pi both read it), each Claude Code `<config dir>/skills`, and the older `~/.codex/skills` and `<pi dir>/skills`. List the skills in each and where each one points. For pi, note any entry under `skills` in its `settings.json` that excludes `~/.agents/skills`.
 - ZCode executor: `command -v zcode`, `zcode --version`, and whether this file exists with a `defaultModelSelection`: `${ZCODE_PERSONAL_PROVIDER_CONFIG_FILE:-${ZCODE_DATA_BASE_DIR:-$HOME}/.zcode/v2/provider_config.json}`. Show only its provider and model IDs, never its keys.
 - Herdr: `herdr --version`, `herdr integration status`, and whether this session runs inside Herdr (`HERDR_ENV=1`).
 
@@ -36,7 +37,7 @@ Done when the user has picked parts and leads.
 ## 3. Get the files
 
 1. Ask where the clone should live (suggest `~/.local/share/llstack`) and run `git clone https://github.com/oglenyaboss/llstack <dir>`. When you are reading this file from a local checkout, use that checkout as `<dir>`. The links below point into it, so it stays at that path.
-2. For each chosen skill and each lead, link `<dir>/skills/<skill>` into the lead's skills directory: Claude Code `<config dir>/skills/`, Codex `~/.codex/skills/`, pi `<pi dir>/skills/`. For any other agent, ask the user for its skills directory. Profiles that share a skills directory through a symlink get one link, in the directory it resolves to. When a skill of the same name already exists there, show what it is and ask: replace or keep. Replace moves it to `<agent dir>/llstack-backup/<skill>`, outside the skills directory, so the agent does not load it twice.
+2. For each chosen skill, link `<dir>/skills/<skill>` once into `~/.agents/skills/` when a lead is Codex or pi, since both read it, and into `<config dir>/skills/` for each Claude Code lead. For any other agent, ask the user for its skills directory. Profiles that share a skills directory through a symlink get one link, in the directory it resolves to. When a skill of the same name already exists in any skill directory from step 1, show what it is and ask: replace or keep. Replace moves it to `<agent dir>/llstack-backup/<skill>`, outside the skills directory, so the agent does not load it twice. When pi's `settings.json` excludes `~/.agents/skills`, show the entry and ask to narrow it; otherwise pi does not see the links.
 
 Done when `ls -l` on each skills directory shows every chosen link resolving into `<dir>`.
 
@@ -111,7 +112,7 @@ Done when `.github/risk-tiers.yml` exists, every role has a label, and the Workf
 
 ## 7. Verify
 
-- Every link: `ls <link>/SKILL.md`.
+- Every link: `ls <link>/SKILL.md`, and `readlink <link>` names a path inside `<dir>`, not another agent's skills directory: two directories linking to each other form a loop that no agent can read.
 - `herdr-delegate`: inside Herdr, `<dir>/skills/herdr-delegate/hd` with no arguments prints its usage.
 - `pr-risk`: in a git repository, run it through the link, the path agents will use: `node <link>/scripts/risk.mjs --base origin/HEAD`, adding `--config <link>/references/risk-tiers.example.yml` when the repository has no `.github/risk-tiers.yml`. It prints a tier, or `empty diff: nothing to classify` on a clean branch. Silence means it did not run.
 - Every settings file you touched passes `jq empty`.
