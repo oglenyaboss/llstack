@@ -99,7 +99,41 @@ case_codex_roles() {
   assert_contains "$HD_OUT" "scout or worker only"
 }
 
+case_model_near_miss_refused() {
+  printf 'prov vendor/m1\nprov vendor/m1-ultrafast\nother m2\n' > "$FAKE_DIR/pi-models"
+  hd_run spawn w1 worker --model prov/m1
+  assert_eq 1 "$HD_RC" "hd spawn with a near-miss model"
+  assert_contains "$HD_OUT" "no exact model prov/m1"
+  assert_contains "$HD_OUT" "prov/vendor/m1"
+  assert_contains "$HD_OUT" "prov/vendor/m1-ultrafast"
+  assert_not_contains "$HD_OUT" "other/m2"
+  [[ ! -e "$FAKE_DIR/agents" ]] || t_fail "an agent started for a near-miss model"
+}
+
+case_model_exact_accepted() {
+  printf 'prov vendor/m1\nprov vendor/m1-ultrafast\n' > "$FAKE_DIR/pi-models"
+  export HD_PI_EXTENSIONS=/x/provider.ts
+  hd_run spawn w1 worker --model prov/vendor/m1
+  assert_eq 0 "$HD_RC" "hd spawn with an exact model"
+  assert_file_contains "$(single_agent_dir)/start.args" "--model prov/vendor/m1"
+  assert_file_contains "$FAKE_DIR/pi.calls" "-e /x/provider.ts"
+
+  hd_run spawn w2 worker --model vendor/m1:high
+  assert_eq 0 "$HD_RC" "hd spawn with a bare ID and a thinking suffix"
+}
+
+case_default_model_near_miss_refused() {
+  printf 'prov vendor/m1-fast\n' > "$FAKE_DIR/pi-models"
+  export HD_MODEL=prov/vendor/m1
+  hd_run spawn w1 worker
+  assert_eq 1 "$HD_RC" "hd spawn with a near-miss HD_MODEL"
+  assert_contains "$HD_OUT" "prov/vendor/m1-fast"
+}
+
 run_case spawn_model_and_thinking case_model_thinking
+run_case spawn_model_near_miss_refused case_model_near_miss_refused
+run_case spawn_model_exact_accepted case_model_exact_accepted
+run_case spawn_default_model_near_miss_refused case_default_model_near_miss_refused
 run_case spawn_without_model_and_thinking case_no_model_thinking
 run_case spawn_extensions_and_scout case_extensions_and_scout
 run_case spawn_missing_cwd case_missing_cwd

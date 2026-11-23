@@ -189,6 +189,7 @@ cmd_spawn() {
   IFS=: read -ra exts <<<"${HD_PI_EXTENSIONS:-}"
   for ext in "${exts[@]}"; do ext_args+=(-e "$ext"); done
   mapfile -d '' ctx_args < <(project_context_args "$(cd "$cwd" && pwd)")
+  [[ -z "$model" ]] || require_exact_pi_model "$model" "${ext_args[@]}"
 
   local rd pane
   rd="$(run_dir)"
@@ -201,6 +202,19 @@ cmd_spawn() {
     --append-system-prompt "$role_file" \
     --append-system-prompt "$SKILL_DIR/roles/_envelope.md"
   echo "spawned $name role=$role pane=$pane model=${model:-pi default} cwd=$cwd"
+}
+
+require_exact_pi_model() {
+  local model="$1" catalog provider id; shift
+  [[ "$model" =~ ^(.+):(off|minimal|low|medium|high|xhigh|max)$ ]] && model="${BASH_REMATCH[1]}"
+  catalog="$(pi "$@" --list-models 2>/dev/null)" || die "pi --list-models failed; cannot verify model $model"
+  provider="${model%%/*}"
+  id="${model#*/}"
+  if awk -v p="$provider" -v i="$id" -v m="$model" '($1 == p && $2 == i) || $2 == m { found = 1 } END { exit !found }' <<<"$catalog"; then
+    return 0
+  fi
+  die "pi has no exact model $model (pi --model falls back to a fuzzy match); exact IDs containing ${model##*/}:
+$(awk -v s="${model##*/}" 'NR > 1 && index($2, s) { print "  " $1 "/" $2 }' <<<"$catalog")"
 }
 
 record_spawn() {

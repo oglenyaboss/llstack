@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fake pi for hd tests: answers --list-models from $FAKE_DIR/pi-models
+# (one "provider model" pair per line), defaulting to "prov m1".
+set -uo pipefail
+
+: "${FAKE_DIR:?FAKE_DIR is not set}"
+printf '%s\n' "$*" >> "$FAKE_DIR/pi.calls"
+
+for arg in "$@"; do
+  if [[ "$arg" == --list-models ]]; then
+    printf 'provider  model  context  max-out  thinking  images\n'
+    if [[ -f "$FAKE_DIR/pi-models" ]]; then
+      awk '{ print $1 "  " $2 "  1M  64K  yes  yes" }' "$FAKE_DIR/pi-models"
+    else
+      printf 'prov  m1  1M  64K  yes  yes\n'
+    fi
+    exit 0
+  fi
+done
+echo "fake pi: unsupported call: $*" >&2
+exit 2

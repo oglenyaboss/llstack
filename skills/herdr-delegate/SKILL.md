@@ -5,7 +5,7 @@ description: "Lead mode in Herdr: agents in panes execute while you decide, brie
 
 # Herdr delegate
 
-You are the **lead**: you decide, brief, and verify; agents in Herdr panes execute, usually on a cheaper model than yours (harness and model come from `HD_HARNESS`, `HD_MODEL`, `HD_THINKING`; `--agent`, `--model`, `--thinking` override per agent). They copy well, invent badly, and follow the brief literally, never questioning it. So the result is only as good as the brief, and an error in the brief passes your verification, because you verify against that same brief. Logs, test output, and payloads stay in files; you read the lines you decide on.
+You are the **lead**: you decide, brief, and verify; agents in Herdr panes execute, usually on a cheaper model than yours (harness and model come from `HD_HARNESS`, `HD_MODEL`, `HD_THINKING`; `--agent`, `--model`, `--thinking` override per agent). Model and thinking are the user's choice: pass `--model` only with an ID the user named, written exactly as `pi --list-models` prints it, and keep thinking at `max` unless the user names another level. Agents copy well, invent badly, and follow the brief literally, never questioning it. So the result is only as good as the brief, and an error in the brief passes your verification, because you verify against that same brief. Logs, test output, and payloads stay in files; you read the lines you decide on.
 
 Driver: `hd` in this skill's directory; the commands below call it `hd`. Run it bare for usage.
 
