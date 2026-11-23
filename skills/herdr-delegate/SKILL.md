@@ -53,6 +53,8 @@ Two fields of the brief are mechanical here. After the reply, `hd` runs Check in
 
 For a scout, hd also checks the payload: each cited quote must be in the file within three lines of the cited line, and each `ABSENT:` string must occur nowhere in the repository. Failures go back to the scout in the same autofix rounds and show under `--- claims`.
 
+A scout brief lists its questions and may set `Depth: quick | normal | deep`; without it the scout works at `normal`. `quick` answers from the paths and names in the brief, `deep` follows every call site of the named symbols and reads their tests. The payload opens with `## Questions`: each question gets a cited answer, an `ABSENT:` line, or what stopped the scout.
+
 For a worker whose Check passes, hd reverts the changed non-test files to the ask's start, runs Check again and expects it to fail, then restores them; a pass goes back to the worker and shows under `--- red`. Add `Red: skip` to a brief whose change keeps behavior, such as a refactor.
 
 ## Roles
@@ -61,7 +63,7 @@ For a worker whose Check passes, hd reverts the changed non-test files to the as
 |---|---|---|---|
 | `sidekick` | whole session; runs and measures, remembers the environment | small fixes | logs, measurements |
 | `worker` | one brief; clean start or a parallel worktree | yes | R → file:line → test |
-| `scout` | one question | no | required: code context with file:line |
+| `scout` | one brief: its questions at a set depth | no | required: code context with file:line |
 | `researcher` | one question | no | required: sourced research brief |
 
 Each `hd ask` hands the agent a fresh OUTPUT_FILE outside the repo for its payload. Code results live in the working tree, knowledge in the payload. Pass a payload to the next agent by path ("Read <path> first") so it bypasses your context.
