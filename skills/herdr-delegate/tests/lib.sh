@@ -70,18 +70,22 @@ hd_run() {
   set -e
 }
 
+hd_config() { printf '%s\n' "$1" > "$HD_CONFIG"; }
+
 case_setup() {
   CASE_TMP="$1"
   export FAKE_DIR="$CASE_TMP/fake"
   export XDG_CACHE_HOME="$CASE_TMP/cache"
   export PI_CODING_AGENT_DIR="$CASE_TMP/pi"
   export HD_TEST_LIB="$ROOT/tests/lib.sh"
+  export HD_CONFIG="$CASE_TMP/hd-config.json"
   mkdir -p "$FAKE_DIR" "$XDG_CACHE_HOME" "$PI_CODING_AGENT_DIR" "$CASE_TMP/work/src"
   export PATH="$ROOT/tests/fake:$PATH"
   export HERDR_ENV=1
   export HERDR_PANE_ID=test:p0
   export HERDR_WORKSPACE_ID=w1
   unset HD_HARNESS HD_MODEL HD_THINKING HD_PI_EXTENSIONS HERDR_BIN_PATH
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"}}'
   cd "$CASE_TMP/work"
   git init -q
   printf 'base\n' > src/a.txt

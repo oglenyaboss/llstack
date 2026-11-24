@@ -7,9 +7,6 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_HARNESS="${HD_HARNESS:-pi}"
-DEFAULT_MODEL="${HD_MODEL:-}"
-DEFAULT_THINKING="${HD_THINKING:-}"
 RUN_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-delegate"
 PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 CODEX_SESSIONS="$HOME/.codex/sessions"
@@ -19,7 +16,7 @@ source "$SKILL_DIR/zcode.sh"
 
 usage() {
   cat <<'EOF'
-hd spawn <name> <role> [--agent pi|codex|zcode] [--cwd DIR] [--model M] [--thinking T] [--session FILE]
+hd spawn <name> <slot> [--agent pi|codex|zcode] [--cwd DIR] [--model M] [--thinking T] [--session FILE]
 hd ask <name> <brief | @file> [--timeout MS]
 hd wait <name> [--timeout MS]
 hd result <name>
@@ -30,12 +27,86 @@ hd stop <name>
 hd resume <name> [--cwd DIR] [--model M] [--thinking T]
 hd note <name> <text>
 
-roles: sidekick worker scout researcher
+slots: config $HD_CONFIG or ~/.config/hd/config.json; built in: sidekick worker scout researcher
 EOF
   exit 2
 }
 
 die() { echo "hd: $*" >&2; exit 1; }
+
+config_path() { printf '%s\n' "${HD_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/hd/config.json}"; }
+
+config_json() {
+  local path="$1" var body
+  for var in HD_HARNESS HD_MODEL HD_THINKING HD_PI_EXTENSIONS; do
+    [[ -z "${!var:-}" ]] || die "$var is set; hd reads $path now: move the value there and unset $var"
+  done
+  [[ -f "$path" ]] || die "no config file $path"
+  body="$(jq -c 'if type == "object" then . else empty end' "$path" 2>/dev/null)" || die "$path is not valid JSON"
+  [[ -n "$body" ]] || die "$path is not valid JSON"
+  printf '%s\n' "$body"
+}
+
+slot_known() {
+  jq -e --arg slot "$2" '(.slots // {} | if type == "object" then has($slot) else false end)
+    or (["sidekick", "worker", "scout", "researcher"] | index($slot) != null)' <<<"$1" >/dev/null
+}
+
+resolve_slot() {
+  jq -c --arg slot "$2" --arg home "$HOME" \
+    --arg flag_agent "$3" --arg flag_model "$4" --arg flag_thinking "$5" \
+    --argjson have_agent "$6" --argjson have_model "$7" --argjson have_thinking "$8" '
+    def obj: if type == "object" then . else {} end;
+    . as $cfg
+    | ($cfg.slots // {} | obj) as $slots
+    | ($cfg.default // {} | obj) as $def
+    | ($slots[$slot] // {} | obj) as $s
+    | ($s.role // $slot) as $role
+    | ($s.harness // $def.harness) as $base_harness
+    | ($s.model // $def.model) as $base_model
+    | ($s.thinking // $def.thinking) as $base_thinking
+    | ($s.pi_extensions // $def.pi_extensions // [] | if type == "array" then map(tostring) else [] end) as $exts
+    | ($s.fallback // $def.fallback // [] | if type == "array" then . else [] end) as $raw
+    | [$raw[] | obj | {harness: (.harness // $base_harness), model: (.model // $base_model), thinking: (.thinking // $base_thinking)}] as $fallback
+    | (if $have_agent == 1 then $flag_agent else $base_harness end) as $harness
+    | (if $have_model == 1 then $flag_model else $base_model end) as $model
+    | (if $have_thinking == 1 then $flag_thinking else $base_thinking end) as $thinking
+    | ($cfg.providers // {} | obj) as $providers
+    | ([ (if $harness == "pi" then $model else empty end),
+         ($fallback[] | select(.harness == "pi") | .model) ]
+       | map(select(type == "string" and length > 0) | split("/")[0])
+       | unique) as $pi_providers
+    | [$pi_providers[] as $p | ($providers[$p] // {} | obj | .pi_extension) | select(type == "string" and length > 0)] as $provider_exts
+    | {role: ($role | tostring),
+       harness: ($harness // "" | tostring),
+       model: ($model // "" | tostring),
+       thinking: ($thinking // "" | tostring),
+       pi_extensions: $exts,
+       extensions: (($exts + $provider_exts) | map(if startswith("~/") then $home + .[1:] else . end)
+         | reduce .[] as $e ([]; if index($e) then . else . + [$e] end)),
+       fallback: $fallback}
+  ' <<<"$1"
+}
+
+chain_entries() {
+  jq -r --arg slot "$2" '
+    [{label: $slot, harness: (.harness // ""), model: (.model // "")}]
+    + [.fallback | to_entries[] | {label: "\($slot) fallback[\(.key)]", harness: (.value.harness // ""), model: (.value.model // "")}]
+    | .[] | [.label, .harness, .model] | join("|")' <<<"$1"
+}
+
+check_harness() {
+  case "$3" in
+    pi|codex|zcode) ;;
+    "") die "slot $2 has no harness in $1" ;;
+    *) die "slot $2 has an unknown harness '$3' in $1" ;;
+  esac
+}
+
+check_codex_role() {
+  [[ "$4" == codex ]] || return 0
+  [[ "$3" == scout || "$3" == worker ]] || die "slot $2: codex agents run as scout or worker only ($1)"
+}
 
 [[ "${HERDR_ENV:-}" == 1 ]] || die "not inside Herdr (HERDR_ENV!=1)"
 
@@ -70,6 +141,25 @@ agent_json() { herdr agent get "$(agent_target "$1")"; }
 agent_status() { agent_json "$1" | jq -r .result.agent.agent_status; }
 agent_kind() { cat "$(run_dir)/$1.agent" 2>/dev/null || echo pi; }
 agent_model() { cat "$(run_dir)/$1.model" 2>/dev/null || echo "$(agent_kind "$1") default"; }
+
+agent_pane() {
+  if [[ "$(agent_kind "$1")" == zcode ]]; then zcode_pane "$1"; else agent_json "$1" | jq -r .result.agent.pane_id; fi
+}
+
+tried_models() {
+  local name="$1" rd
+  rd="$(run_dir)"
+  if [[ -f "$rd/$name.tried" ]]; then cat "$rd/$name.tried"; fi
+  agent_model "$name"
+}
+
+tried_text() {
+  local name="$1" model out=""
+  while IFS= read -r model; do
+    out="${out:+$out → }$model"
+  done < <(tried_models "$name")
+  printf '%s\n' "$out"
+}
 
 agent_session() {
   case "$(agent_kind "$1")" in
@@ -167,74 +257,112 @@ place_pane() {
 }
 
 cmd_spawn() {
-  local name="${1:-}" role="${2:-}"; shift 2 || usage
-  [[ -n "$name" && -n "$role" ]] || usage
-  local cwd="$PWD" model="" thinking="" session="" kind="$DEFAULT_HARNESS"
+  local name="${1:-}" slot="${2:-}"; shift 2 || usage
+  [[ -n "$name" && -n "$slot" ]] || usage
+  local cwd="$PWD" cli_agent="" cli_model="" cli_thinking="" session=""
+  local have_agent=0 have_model=0 have_thinking=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --agent) kind="$2"; shift 2 ;;
+      --agent) cli_agent="$2"; have_agent=1; shift 2 ;;
       --cwd) cwd="$2"; shift 2 ;;
-      --model) model="$2"; shift 2 ;;
-      --thinking) thinking="$2"; shift 2 ;;
+      --model) cli_model="$2"; have_model=1; shift 2 ;;
+      --thinking) cli_thinking="$2"; have_thinking=1; shift 2 ;;
       --session) session="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
   cwd="$(cd "$cwd" 2>/dev/null && pwd)" || die "no such directory: $cwd"
-  case "$kind" in
-    pi) ;;
-    codex) spawn_codex "$name" "$role" "$cwd" "$model" "$thinking" "$session"; return ;;
-    zcode) spawn_zcode "$name" "$role" "$cwd" "$model" "$thinking" "$session"; return ;;
-    *) die "unknown agent: $kind (pi, codex or zcode)" ;;
-  esac
-  model="${model:-$DEFAULT_MODEL}"
-  thinking="${thinking:-$DEFAULT_THINKING}"
-  local session_args=() model_args=()
-  [[ -n "$session" ]] && session_args=(--session "$session")
-  [[ -n "$model" ]] && model_args+=(--model "$model")
-  [[ -n "$thinking" ]] && model_args+=(--thinking "$thinking")
+
+  local path body res chain role harness model thinking fallback
+  local label entry_harness entry_model pi_chain catalog
+  path="$(config_path)"
+  body="$(config_json "$path")"
+  slot_known "$body" "$slot" || die "unknown slot $slot in $path"
+  res="$(resolve_slot "$body" "$slot" "$cli_agent" "$cli_model" "$cli_thinking" "$have_agent" "$have_model" "$have_thinking")"
+  role="$(jq -r .role <<<"$res")"
+  harness="$(jq -r .harness <<<"$res")"
+  model="$(jq -r .model <<<"$res")"
+  thinking="$(jq -r .thinking <<<"$res")"
+  fallback="$(jq -c .fallback <<<"$res")"
+
+  chain="$(chain_entries "$res" "$slot")"
+  while IFS='|' read -r label entry_harness entry_model; do
+    check_harness "$path" "$label" "$entry_harness"
+    check_codex_role "$path" "$label" "$role" "$entry_harness"
+    [[ -n "$entry_model" ]] || die "slot $label has no model in $path"
+  done <<<"$chain"
+
   local role_file="$SKILL_DIR/roles/$role.md" tools
   [[ -f "$role_file" ]] || die "no role file: $role_file"
   tools="$(role_tools "$role")"
 
-  local ext_args=(--no-extensions -e builtin:mcp -e builtin:tool-search) ext ctx_args=() exts=()
+  local ext_args=(--no-extensions -e builtin:mcp -e builtin:tool-search) ext
   [[ -f "$PI_AGENT_DIR/extensions/herdr-agent-state.ts" ]] && ext_args+=(-e "$PI_AGENT_DIR/extensions/herdr-agent-state.ts")
-  IFS=: read -ra exts <<<"${HD_PI_EXTENSIONS:-}"
-  for ext in "${exts[@]}"; do ext_args+=(-e "$ext"); done
+  while IFS= read -r ext; do ext_args+=(-e "$ext"); done < <(jq -r '.extensions[]' <<<"$res")
+
+  pi_chain="$(awk -F'|' '$2 == "pi" && $3 != ""' <<<"$chain")"
+  if [[ -n "$pi_chain" ]]; then
+    catalog="$(pi "${ext_args[@]}" --list-models 2>/dev/null)" || die "slot $slot: pi --list-models failed in $path"
+    while IFS='|' read -r label entry_harness entry_model; do
+      require_exact_pi_model "$entry_model" "$catalog" "slot $label ($path)"
+    done <<<"$pi_chain"
+  fi
+  while IFS='|' read -r label entry_harness entry_model; do
+    [[ "$entry_harness" == zcode ]] || continue
+    zcode_valid_model "$entry_model" || die "slot $label: zcode model must be providerId/modelId ($path)"
+  done <<<"$chain"
+  local pi_count ext_count
+  pi_count="$(awk -F'|' '$2 == "pi"' <<<"$chain" | wc -l | tr -d ' ')"
+  ext_count="$(jq '.pi_extensions | length' <<<"$res")"
+  if [[ "$role" == researcher && "$pi_count" -gt 0 && "$ext_count" -eq 0 ]]; then
+    die "slot $slot runs researcher on pi without pi_extensions in $path"
+  fi
+
+  case "$harness" in
+    pi) ;;
+    codex) spawn_codex "$name" "$role" "$cwd" "$model" "$thinking" "$session" "$slot" "$fallback"; return ;;
+    zcode) spawn_zcode "$name" "$role" "$cwd" "$model" "$thinking" "$session" "$slot" "$fallback"; return ;;
+  esac
+
+  local session_args=() model_args=(--model "$model") ctx_args=()
+  [[ -n "$session" ]] && session_args=(--session "$session")
+  [[ -n "$thinking" ]] && model_args+=(--thinking "$thinking")
   mapfile -d '' ctx_args < <(project_context_args "$(cd "$cwd" && pwd)")
-  [[ -z "$model" ]] || require_exact_pi_model "$model" "${ext_args[@]}"
 
   local rd pane
   rd="$(run_dir)"
   pane="$(place_pane "$rd" "$cwd")"
-  record_spawn "$rd" "$pane" "$name" "$role" pi "$model" "$cwd"
+  record_spawn "$rd" "$pane" "$name" "$role" pi "$model" "$cwd" "$slot" "$thinking" "$fallback"
 
   start_agent "$name" pi "$pane" \
     "${ext_args[@]}" "${session_args[@]}" --no-context-files --no-skills --no-prompt-templates "${ctx_args[@]}" \
     "${model_args[@]}" --tools "$tools" \
     --append-system-prompt "$role_file" \
     --append-system-prompt "$SKILL_DIR/roles/_envelope.md"
-  echo "spawned $name role=$role pane=$pane model=${model:-pi default} cwd=$cwd"
+  echo "spawned $name role=$role pane=$pane model=$model cwd=$cwd"
 }
 
 require_exact_pi_model() {
-  local model="$1" catalog provider id; shift
+  local model="$1" catalog="$2" where="$3" provider id
   [[ "$model" =~ ^(.+):(off|minimal|low|medium|high|xhigh|max)$ ]] && model="${BASH_REMATCH[1]}"
-  catalog="$(pi "$@" --list-models 2>/dev/null)" || die "pi --list-models failed; cannot verify model $model"
   provider="${model%%/*}"
   id="${model#*/}"
   if awk -v p="$provider" -v i="$id" -v m="$model" '($1 == p && $2 == i) || $2 == m { found = 1 } END { exit !found }' <<<"$catalog"; then
     return 0
   fi
-  die "pi has no exact model $model (pi --model falls back to a fuzzy match); exact IDs containing ${model##*/}:
+  die "$where: pi has no exact model $model (pi --model falls back to a fuzzy match); exact IDs containing ${model##*/}:
 $(awk -v s="${model##*/}" 'NR > 1 && index($2, s) { print "  " $1 "/" $2 }' <<<"$catalog")"
 }
 
 record_spawn() {
   local rd="$1" pane="$2" name="$3" role="$4" kind="$5" model="$6" cwd="$7"
+  local slot="${8:-$4}" thinking="${9:-}" fallback="${10:-[]}"
   echo "$role" > "$rd/$name.role"
+  echo "$slot" > "$rd/$name.slot"
   echo "$kind" > "$rd/$name.agent"
   if [[ -n "$model" ]]; then echo "$model" > "$rd/$name.model"; else rm -f "$rd/$name.model"; fi
+  printf '%s\n' "$thinking" > "$rd/$name.thinking"
+  printf '%s\n' "$fallback" > "$rd/$name.fallback"
   echo "$cwd" > "$rd/$name.cwd"
 }
 
@@ -249,24 +377,27 @@ start_agent() {
 
 # ponytail: codex runs scouts and workers; sidekick and researcher need network and build caches, untried on codex
 spawn_codex() {
-  local name="$1" role="$2" cwd="$3" model="$4" thinking="${5:-high}" session="$6"
+  local name="$1" role="$2" cwd="$3" model="$4" thinking="${5:-}" session="$6"
+  local slot="${7:-$2}" fallback="${8:-[]}"
   [[ "$role" == scout || "$role" == worker ]] || die "codex agents run as scout or worker only"
   cwd="$(cd "$cwd" && pwd)"
-  local rd pane args=() instructions sandbox
+  local rd pane args=() instructions sandbox effort=() effort_value="$thinking"
   rd="$(run_dir)"
   sandbox=(-s workspace-write --add-dir "$rd")
   [[ "$role" == worker ]] && sandbox=(-s danger-full-access)
+  [[ "$effort_value" == max ]] && effort_value=xhigh
+  [[ -n "$effort_value" ]] && effort=(-c "model_reasoning_effort=\"$effort_value\"")
   if [[ -n "$session" ]]; then
     args=(resume "$(jq -r 'select(.type == "session_meta") | .payload.id' "$session" | head -n 1)")
   fi
   instructions="$(cat "$SKILL_DIR/roles/$role.md" "$SKILL_DIR/roles/_envelope.md" | jq -Rs .)"
-  args+=(-C "$cwd" "${sandbox[@]}" -a never
-    -c "model_reasoning_effort=\"$thinking\"" -c 'project_doc_fallback_filenames=["CLAUDE.md"]'
+  args+=(-C "$cwd" "${sandbox[@]}" -a never "${effort[@]}"
+    -c 'project_doc_fallback_filenames=["CLAUDE.md"]'
     -c "developer_instructions=$instructions")
   [[ -n "$model" ]] && args+=(-m "$model")
 
   pane="$(place_pane "$rd" "$cwd")"
-  record_spawn "$rd" "$pane" "$name" "$role" codex "$model" "$cwd"
+  record_spawn "$rd" "$pane" "$name" "$role" codex "$model" "$cwd" "$slot" "$thinking" "$fallback"
   if [[ -n "$session" ]]; then echo "$session" > "$rd/$name.rollout"; else rm -f "$rd/$name.rollout" "$rd/$name.out"; fi
   start_agent "$name" codex "$pane" "${args[@]}"
   echo "spawned $name role=$role agent=codex pane=$pane model=$(agent_model "$name") thinking=$thinking cwd=$cwd"
@@ -378,6 +509,10 @@ dispatch_wait() {
   herdr agent wait "$(agent_target "$name")" --timeout "$timeout" >/dev/null 2>&1
 }
 
+ask_message() {
+  printf '%s\n\n---\nOUTPUT_FILE: %s\nWrite the payload your role defines to OUTPUT_FILE. End your turn with the report envelope from your role instructions.\n' "$1" "$2"
+}
+
 cmd_ask() {
   local name="${1:-}" brief="${2:-}"; shift 2 || usage
   [[ -n "$name" && -n "$brief" ]] || usage
@@ -430,6 +565,7 @@ cmd_ask() {
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
+  rm -f "$rd/$name.tried"
   rm -f "$rd/$name.autofix"
   if head_commit="$(git -C "$(agent_cwd "$name")" rev-parse HEAD 2>/dev/null)"; then
     printf '%s\n' "$head_commit" > "$rd/$name.head"
@@ -454,11 +590,7 @@ cmd_ask() {
   printf '%s\n%s\n' "$session" "$mark_offset" > "$rd/$name.mark"
 
   local msg
-  msg="$brief
-
----
-OUTPUT_FILE: $out
-Write the payload your role defines to OUTPUT_FILE. End your turn with the report envelope from your role instructions."
+  msg="$(ask_message "$brief" "$out")"
 
   local rc=0 res
   res="$(dispatch_prompt "$name" "$msg" "$timeout" "${out##*/}")" || rc=$?
@@ -492,6 +624,64 @@ reply_done() {
   grep -qiE 'done|готово' <<<"$line"
 }
 
+answer_turn() {
+  local name="$1" msg="$2" timeout="$3" tag="$4" note="$5" rc=0 res
+  res="$(dispatch_prompt "$name" "$msg" "$timeout" "$tag")" || rc=$?
+  if [[ "$(agent_kind "$name")" == zcode ]]; then
+    if [[ -f "$(zcode_exit_file "$name")" ]]; then
+      zcode_print_exit "$name"
+      return 0
+    fi
+    if [[ $rc -ne 0 || "$res" == timeout ]]; then
+      echo "STATUS: still_working"
+      echo "$name $note; continue with: hd wait $name"
+      exit 0
+    fi
+  elif [[ $rc -ne 0 ]]; then
+    echo "STATUS: still_working"
+    echo "$name $note; continue with: hd wait $name"
+    exit 0
+  fi
+  finish "$name" "$timeout"
+}
+
+fallback_ready() {
+  local name="$1" rd
+  rd="$(run_dir)"
+  [[ -s "$rd/$name.out" ]] || return 1
+  jq -e 'type == "array" and length > 0' "$rd/$name.fallback" >/dev/null 2>&1
+}
+
+fallback_switch() {
+  local name="$1" err="$2" rd list entry rest harness model thinking old out slot cwd pane
+  rd="$(run_dir)"
+  list="$(<"$rd/$name.fallback")"
+  entry="$(jq -c '.[0]' <<<"$list")"
+  rest="$(jq -c '.[1:]' <<<"$list")"
+  harness="$(jq -r '.harness // ""' <<<"$entry")"
+  model="$(jq -r '.model // ""' <<<"$entry")"
+  thinking="$(jq -r '.thinking // ""' <<<"$entry")"
+  old="$(agent_model "$name")"
+  out="$(<"$rd/$name.out")"
+  pane="$(agent_pane "$name" 2>/dev/null)" || pane=""
+  printf -- '--- fallback: %s → %s: %s\n' "$old" "$model" "$err"
+  printf '%s\n' "$old" >> "$rd/$name.tried"
+  [[ -z "$pane" ]] || herdr pane close "$pane" >/dev/null
+  cmd_spawn "$name" "$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")" --cwd "$(agent_cwd "$name")" \
+    --agent "$harness" --model "$model" --thinking "$thinking" >/dev/null
+  printf '%s\n' "$rest" > "$rd/$name.fallback"
+  printf '%s\n' "$out" > "$rd/$name.out"
+  rm -f "$rd/$name.mark" "$rd/$name.retried"
+}
+
+fallback_message() {
+  local name="$1" rd out
+  rd="$(run_dir)"
+  out="$(<"$rd/$name.out")"
+  printf 'A previous attempt at this brief ended on a provider error on another model. The working tree may hold its unfinished changes: check git status and git diff before you start.\n\n%s\n' \
+    "$(ask_message "$(<"${out%.md}.brief")" "$out")"
+}
+
 settle_ask() {
   local name="$1" timeout="$2" status err rd settled retry_rc=0 res
   rd="$(run_dir)"
@@ -522,29 +712,19 @@ settle_ask() {
   err="$(provider_error "$name")"
   if [[ -n "$err" ]]; then
     if [[ -f "$rd/$name.retried" ]]; then
+      if fallback_ready "$name"; then
+        fallback_switch "$name" "$err"
+        answer_turn "$name" "$(fallback_message "$name")" "$timeout" fallback "moved to a fallback model"
+        return
+      fi
       echo "STATUS: provider_error"
       echo "$err (already retried once; check the working tree, then re-ask or re-brief)"
       echo "agent=$(agent_kind "$name") model=$(agent_model "$name")"
+      echo "models tried: $(tried_text "$name")"
       return
     fi
     touch "$rd/$name.retried"
-    res="$(dispatch_prompt "$name" "Previous turn died on a provider error ($err). Continue the same task from where you stopped, then end with the report envelope." "$timeout" retry)" || retry_rc=$?
-    if [[ "$(agent_kind "$name")" == zcode ]]; then
-      if [[ -f "$(zcode_exit_file "$name")" ]]; then
-        zcode_print_exit "$name"
-        return
-      fi
-      if [[ $retry_rc -ne 0 || "$res" == timeout ]]; then
-        echo "STATUS: still_working"
-        echo "$name was retried after a provider error; continue with: hd wait $name"
-        exit 0
-      fi
-    elif [[ $retry_rc -ne 0 ]]; then
-      echo "STATUS: still_working"
-      echo "$name was retried after a provider error; continue with: hd wait $name"
-      exit 0
-    fi
-    finish "$name" "$timeout"
+    answer_turn "$name" "Previous turn died on a provider error ($err). Continue the same task from where you stopped, then end with the report envelope." "$timeout" retry "was retried after a provider error"
     return
   fi
   local check_block scope_block claims_block concurrent_block red_block red_files rounds=0 check_rc="" outside=""
@@ -922,6 +1102,7 @@ journal_ask() {
   jq -nc --arg ts "$(date +%Y-%m-%dT%H:%M:%S%z)" --arg project "$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || echo "$cwd")" \
     --arg name "$name" --arg role "$(cat "$rd/$name.role" 2>/dev/null || echo unknown)" \
     --arg agent "$(agent_kind "$name")" --arg model "$(agent_model "$name")" \
+    --argjson models "$(tried_models "$name" | jq -Rn '[inputs]')" \
     --arg brief "${out%.md}.brief" --arg payload "$out" \
     --arg status "$(reply_text "$name" | grep -m1 -E 'STATUS' || true)" \
     --argjson autofix "$autofix" \
@@ -936,7 +1117,7 @@ journal_ask() {
     --argjson outside "$(journal_lines "$rd/$name.outside")" \
     --argjson concurrent "$(journal_lines "$rd/$name.concurrent")" \
     --arg ctx "$(agent_ctx "$name")" \
-    '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model,
+    '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model, models: $models,
       status: $status, autofix: $autofix, head: $head, base: $base, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
       ctx: $ctx, brief: $brief, payload: $payload, claims: $claims, red_exit: $red_exit}' >> "$JOURNAL"
 }
@@ -1005,7 +1186,7 @@ cmd_ls() {
     [[ -e "$f" ]] || continue
     name="$(basename "$f" .role)"
     if agent_json "$name" >/dev/null 2>&1; then
-      echo "$name $(cat "$f") $(agent_status "$name") $(agent_json "$name" | jq -r .result.agent.pane_id) ctx=$(agent_ctx "$name")"
+      echo "$name $(cat "$f") $(agent_status "$name") $(agent_json "$name" | jq -r .result.agent.pane_id) ctx=$(agent_ctx "$name") model=$(agent_model "$name")"
     fi
   done
 }
@@ -1013,12 +1194,10 @@ cmd_ls() {
 cmd_stop() {
   local name="${1:-}"; [[ -n "$name" ]] || usage
   local rd pane; rd="$(run_dir)"
+  pane="$(agent_pane "$name")"
   if [[ "$(agent_kind "$name")" == zcode ]]; then
-    pane="$(zcode_pane "$name")"
     [[ -n "$pane" ]] || die "no pane for $name"
     zcode_save_session "$name"
-  else
-    pane="$(agent_json "$name" | jq -r .result.agent.pane_id)"
   fi
   agent_session "$name" > "$rd/$name.session"
   herdr pane close "$pane" >/dev/null
@@ -1033,14 +1212,18 @@ cmd_resume() {
     resume_zcode "$name" "$@"
     return
   fi
-  local rd session; rd="$(run_dir)"
+  local rd session slot saved=() saved_fallback=""
+  rd="$(run_dir)"
   session="$(cat "$rd/$name.session" 2>/dev/null || true)"
   [[ -f "$session" && -f "$rd/$name.role" ]] || die "no stopped session for $name"
-  local saved=()
+  slot="$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")"
+  [[ -f "$rd/$name.fallback" ]] && saved_fallback="$(<"$rd/$name.fallback")"
   [[ -f "$rd/$name.cwd" ]] && saved+=(--cwd "$(<"$rd/$name.cwd")")
   [[ -f "$rd/$name.model" ]] && saved+=(--model "$(<"$rd/$name.model")")
+  [[ -f "$rd/$name.thinking" ]] && saved+=(--thinking "$(<"$rd/$name.thinking")")
   [[ -f "$rd/$name.agent" ]] && saved+=(--agent "$(<"$rd/$name.agent")")
-  cmd_spawn "$name" "$(cat "$rd/$name.role")" --session "$session" "${saved[@]}" "$@"
+  cmd_spawn "$name" "$slot" --session "$session" "${saved[@]}" "$@"
+  [[ -z "$saved_fallback" ]] || printf '%s\n' "$saved_fallback" > "$rd/$name.fallback"
 }
 
 case "${1:-}" in

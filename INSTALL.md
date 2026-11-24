@@ -45,9 +45,9 @@ Done when `ls -l` on each skills directory shows every chosen link resolving int
 
 Only when `herdr-delegate` was chosen.
 
-1. Ask which executor the agents use: pi (default, every role), or ZCode (every role in a persistent TUI; [setup and limits](skills/herdr-delegate/executors/zcode.md)). Codex stays the scout executor. Require the chosen one to be configured: pi with a provider, or ZCode with `zcode` on PATH and a readable personal provider file. When neither is configured, stop and show what is missing.
+1. Ask which executor the agents use: pi (every role), or ZCode (every role in a persistent TUI; [setup and limits](skills/herdr-delegate/executors/zcode.md)). Codex stays the scout executor. Require the chosen one to be configured: pi with a provider, or ZCode with `zcode` on PATH and a readable personal provider file. When neither is configured, stop and show what is missing.
 2. Install the Herdr integration only for a pi executor: when `herdr integration status` shows the pi integration missing, propose `herdr integration install pi`. ZCode has no Herdr integration to install; its hooks report state to Herdr.
-3. Ask which model and thinking level that executor should use, then set the chosen values as `HD_HARNESS`, `HD_MODEL`, and `HD_THINKING` in the lead's environment. pi model names stay as pi writes them; ZCode takes `providerId/modelId` and a thinking level only if the model supports it. Credentials stay in the executor's own config: pi's provider config or the personal ZCode provider file. When the user has a pi web-search extension for the researcher role, add its path as `HD_PI_EXTENSIONS` (colon-separated; pi only). For Claude Code, the lead's environment is the `env` object in the `settings.json` of each chosen profile; for another lead, it is wherever that client's shell commands get their environment.
+3. Ask which harness, model and thinking level the agents should use, which roles differ from that, and which models to fall back to when a provider fails. Write the answers to `${XDG_CONFIG_HOME:-$HOME/.config}/hd/config.json` in the format of the skill's [Configuration](skills/herdr-delegate/SKILL.md#configuration) section: `default` for every role, `slots` for the roles that differ, `fallback` for the replacement models, `providers` for the pi extension each pi provider needs. pi model names stay as `pi --list-models` prints them; ZCode takes `providerId/modelId` and a thinking level only if the model supports it. Credentials stay in the executor's own config: pi's provider config or the personal ZCode provider file. A researcher on pi needs the user's pi web-search extension in its slot's `pi_extensions`; without one it does not spawn. When a lead's environment still sets the `HD_*` variables that carried harness, model, thinking or pi extensions before the config file (for Claude Code, the `env` object in each profile's `settings.json`), show where and propose removing them: `hd` refuses to spawn while they are set.
 4. Claude Code only. Offer the compact hook: after the context compacts, it reminds the lead of its role and lists the agents still running.
 
    ```json
@@ -64,7 +64,7 @@ Only when `herdr-delegate` was chosen.
 
 When editing `settings.json`: copy it to `settings.json.bak-llstack` first, merge into the existing JSON (other keys keep their values, lists get the new entries appended), then confirm `jq empty settings.json` succeeds.
 
-Done when the env values, the Herdr integration state, and the hook and denials the user accepted read back.
+Done when the config file passes `jq empty`, no lead's environment sets an `HD_*` variable from step 3, and the Herdr integration state and the hook and denials the user accepted read back.
 
 ## 5. Rules
 

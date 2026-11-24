@@ -1,6 +1,6 @@
 # ZCode executor
 
-ZCode runs every role (sidekick, worker, scout, researcher) in one persistent interactive TUI inside its Herdr pane; `hd` sends each brief to that pane and reads the reply from ZCode's hooks. pi stays the default and Codex stays the scout executor. Select ZCode with `HD_HARNESS=zcode` or `--agent zcode`.
+ZCode runs every role (sidekick, worker, scout, researcher) in one persistent interactive TUI inside its Herdr pane; `hd` sends each brief to that pane and reads the reply from ZCode's hooks. Select ZCode with `"harness": "zcode"` in a slot or the `default` of hd's config, or with `--agent zcode`.
 
 Tested with the official CLI **0.17.1** at [fec9759](https://github.com/zai-org/ZCode/commit/fec975905a2abd4c07e35c40d51fa097a2258ec9) and Herdr 0.9.5 on Linux ARM64, using a local test API, DeepSeek V4.1 Flash through OpenCode Go, and DeepSeek V4.1 Flash through Command Code (`openai-chat-completions` at `https://api.commandcode.ai/provider/v1`). Live `hd` runs covered worker and scout spawn, ask with Check and Scope, follow-up asks, and stop and resume with the conversation kept; permission dialogs, failure retries, and timeouts were exercised against the TUI and the test suite. Other platforms and CLI versions are unverified.
 
@@ -30,20 +30,19 @@ personal="${ZCODE_PERSONAL_PROVIDER_CONFIG_FILE:-${ZCODE_DATA_BASE_DIR:-$HOME}/.
 jq '{providerId: .config.defaultModelSelection.providerId, modelId: .config.defaultModelSelection.modelId}' "$personal"
 ```
 
-Select a model through the file's `defaultModelSelection` or `HD_MODEL`; `hd` copies the whole provider file, including its API key. `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` overrides the source path. Keep keys in that file only: do not put them in `HD_*` values, examples, or a brief. A failed spawn names the missing path or model, never the file's contents.
+The model comes from the slot in hd's config; `hd` copies the whole provider file, including its API key. `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` overrides the source path. Keep keys in that file only: do not put them in hd's config, examples, or a brief. A failed spawn names the missing path or model, never the file's contents.
 
 The selected provider rule must explicitly contain `config.access.type: "api-key"`, a non-empty `apiKey`, and `config.api.baseUrl`. Template-only endpoints and account credentials are not resolved by `hd`.
 
-`HD_MODEL` and `--model` use `providerId/modelId`; `hd` splits at the first `/` and the rest is the model ID. `HD_THINKING` and `--thinking` set that model's `reasoningLevel`; use a level the model supports. Without `HD_MODEL`, the file's `defaultModelSelection` stays in force; changing the model without `HD_THINKING` drops the previous model's reasoning level. Spawn fails when neither the file nor `HD_MODEL` selects a model.
+A slot's `model` and `--model` use `providerId/modelId`; `hd` splits at the first `/` and the rest is the model ID. A slot's `thinking` and `--thinking` set that model's `reasoningLevel`: use a level the model supports, or leave `thinking` out of both the slot and `default`. A model other than the file's `defaultModelSelection` without `thinking` drops the previous model's reasoning level. Spawn fails when the slot has no model.
 
 Provider headers in `config.api.headers` are copied as well. OpenCode Go requires a stable `x-opencode-session` header; configure it with the gateway endpoint described in [OpenCode's harness setup](https://opencode.ai/docs/console/harnesses/).
 
 ## Run
 
 ```sh
-export HD_HARNESS=zcode
-export HD_MODEL=example/example-model
-# export HD_THINKING=high    # only for a model that supports it
+# ~/.config/hd/config.json: {"default": {"harness": "zcode", "model": "example/example-model"}}
+# add "thinking": "high" only for a model that supports it
 
 hd spawn w1 worker --cwd ~/src/project
 hd ask w1 @brief.md
