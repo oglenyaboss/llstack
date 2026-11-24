@@ -9,7 +9,7 @@ You are the **lead**: you decide, brief, and verify; agents in Herdr panes execu
 
 Driver: `hd` in this skill's directory; the commands below call it `hd`. Run it bare for usage.
 
-Codex leads: read [clients/codex.md](clients/codex.md) before the first `hd ask` for the launch and wait recipe. In Antigravity CLI, keep the shell task ID if `hd ask` moves to the background. Wait for that task's completion message, then handle its output in step 4. Other clients: launch through your shell tool, retain its task handle, and use its completion notification or wait operation until the command finishes.
+Leads in the Codex CLI read [clients/codex.md](clients/codex.md) before the first `hd ask` for the launch and wait recipe; a Codex model in another harness, such as pi, does not. In Antigravity CLI, keep the shell task ID if `hd ask` moves to the background. Wait for that task's completion message, then handle its output in step 4. Other clients: launch through your shell tool, retain its task handle, and use its completion notification or wait operation until the command finishes.
 
 ## Who does what
 
@@ -27,7 +27,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
 
 1. **Decide.** Recon goes to a scout. Past three searches (grep, find, ls) on one question, you are doing recon: hand it over. You read only the lines where a decision lives, starting from the scout's file:line, and settle every choice the task contains, down to names and mappings. Where the result lives and what it replaces is the user's call: one question before the first brief. Done when no open choice is left for the executor. Working from an issue: its facts are hypotheses until a scout confirms them at the current HEAD; a false fact or a choice that is the user's sends the issue back to the user with the question (with the `needs-info` label when the project uses the `issue-workflow` labels), never into the brief as your guess.
 2. **Brief.** Read the `brief` skill ([../brief/SKILL.md](../brief/SKILL.md)) before your first brief of the session, and write the brief in its format to a file. Done when an agent with zero context could execute it without guessing.
-3. **Ask and wait.** Launch `hd ask <name> @brief.md` through your client's shell tool; the default timeout is 50 minutes. Continue independent work while it runs. When none remains, wait on the existing task handle until the command returns. A shell tool yielding control means the command is still running. `STATUS: still_working` from `hd` means continue with `hd wait <name>`. Done when the command returns an envelope to handle in step 4.
+3. **Ask and wait.** Before you spawn, tell the user in one line which agents start, on which model, and why. Launch `hd ask <name> @brief.md --timeout 600000` through your client's shell tool. Continue independent work while it runs. When none remains, wait on the existing task handle until the command returns. A shell tool yielding control means the command is still running. `STATUS: still_working` comes every 10 minutes while the agent works: give the user one line on who is still running and what is done, then `hd wait <name> --timeout 600000`. Do not end your turn while an agent you asked is running: nothing wakes you when it finishes. Done when the command returns an envelope to handle in step 4.
 4. **Read the envelope** by meaning; small models drift its keys and language.
    - `needs_decision`: decide, or ask the user if the choice is theirs, then `hd ask` the same agent; it keeps its context. A brief that contradicts the code is your error: fix the brief.
    - `failed`: send the same agent the concrete defect. After two failed corrections, do it yourself or re-brief a fresh worker.
@@ -56,7 +56,7 @@ For a scout or a reviewer, hd also checks the payload: each cited quote must be 
 
 A scout brief lists its questions and may set `Depth: quick | normal | deep`; without it the scout works at `normal`. `quick` answers from the paths and names in the brief, `deep` follows every call site of the named symbols and reads their tests. The payload opens with `## Questions`: each question gets a cited answer, an `ABSENT:` line, or what stopped the scout.
 
-For a worker whose Check passes, hd reverts the changed non-test files to the ask's start, runs Check again and expects it to fail, then restores them; a pass goes back to the worker and shows under `--- red`. Add `Red: skip` to a brief whose change keeps behavior, such as a refactor.
+For a worker whose Check passes, hd reverts the changed implementation files (not tests, not Markdown) to the ask's start, runs Check again and expects it to fail, then restores them; a pass goes back to the worker and shows under `--- red`. Add `Red: skip` to a brief whose change keeps behavior, such as a refactor.
 
 ## Roles
 

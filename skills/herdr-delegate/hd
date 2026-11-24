@@ -963,7 +963,8 @@ run_red() {
         ;;
     esac
     case "${path##*/}" in
-      *_test.*|*.test.*|*.spec.*|test_*|*Test.*|*Tests.*) tests=1 ;;
+      *_test.*|*.test.*|*.spec.*|*-spec.*|test_*|*Test.*|*Tests.*) tests=1 ;;
+      *.md) ;;
       *) files+=("$path") ;;
     esac
   done < "$rd/$name.changed"

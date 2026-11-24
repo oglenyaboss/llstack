@@ -2,12 +2,12 @@
 
 `hd` controls agents in Herdr panes. Codex shell process handles and `functions.exec` cell handles track the commands waiting for those agents. Native Codex subagent wait tools track a different set of agents.
 
-When no independent work remains, keep the waiting loop inside one `functions.exec` cell. Set its outer `yield_time_ms` to the task's wait budget, up to the default 50-minute `hd` timeout. Shell polling inside JavaScript does not require another model inference. Print the final result only.
+When no independent work remains, keep the waiting loop inside one `functions.exec` cell. Pass `--timeout 600000` to `hd ask` and set the cell's outer `yield_time_ms` a little above it, so control returns at least every 10 minutes for the status line the Loop requires. Shell polling inside JavaScript does not require another model inference. Print the final result only.
 
 ```js
-// @exec: {"yield_time_ms": 3000000, "max_output_tokens": 2000}
+// @exec: {"yield_time_ms": 660000, "max_output_tokens": 2000}
 let result = await tools.exec_command({
-  cmd: "/path/to/herdr-delegate/hd ask NAME @/path/to/brief.md",  // this skill's directory
+  cmd: "/path/to/herdr-delegate/hd ask NAME @/path/to/brief.md --timeout 600000",  // this skill's directory
   yield_time_ms: 1000,
   max_output_tokens: 2000
 });

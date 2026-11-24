@@ -791,6 +791,11 @@ mkdir -p tests
 if [[ "${RED_TEST_ONLY:-}" != 1 ]]; then
   printf 'hello\n' > src/impl.txt
 fi
+if [[ "${RED_EXTRA:-}" == 1 ]]; then
+  mkdir -p e2e docs
+  printf 'spec\n' > e2e/flow.e2e-spec.ts
+  printf 'notes\n' > docs/notes.md
+fi
 if [[ "${RED_FIRST_PASS:-}" == 1 && "$3" == 1 || "${RED_TEST_ONLY:-}" == 1 ]]; then
   printf 'true\n' > tests/check.sh
 else
@@ -850,6 +855,22 @@ case_red_skip() {
 case_red_test_only() {
   spawn_w1
   export RED_TEST_ONLY=1
+  write_red_hook
+  ask_red ""
+  assert_not_contains "$HD_OUT" "--- red"
+}
+
+case_red_e2e_spec_and_docs() {
+  spawn_w1
+  export RED_EXTRA=1
+  write_red_hook
+  ask_red ""
+  assert_contains "$HD_OUT" "--- red: Check exit=2 with 1 implementation files"
+}
+
+case_red_tests_and_docs_only() {
+  spawn_w1
+  export RED_TEST_ONLY=1 RED_EXTRA=1
   write_red_hook
   ask_red ""
   assert_not_contains "$HD_OUT" "--- red"
@@ -927,6 +948,8 @@ run_case ask_red_autofix case_red_autofix
 run_case ask_red_modified case_red_modified
 run_case ask_red_skip case_red_skip
 run_case ask_red_test_only case_red_test_only
+run_case ask_red_e2e_spec_and_docs case_red_e2e_spec_and_docs
+run_case ask_red_tests_and_docs_only case_red_tests_and_docs_only
 run_case ask_red_failed_status case_red_failed_status
 run_case ask_red_interrupted case_red_interrupted
 run_case ask_red_journal case_red_journal
