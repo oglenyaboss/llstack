@@ -32,6 +32,66 @@ Scope: `src/b.txt`'
   assert_calls_nonempty
 }
 
+case_claims_reviewer() {
+  setup_claims reviewer
+  CLAIMS_FIRST=$'### F1 [high] wrong value\n`src/a.txt:2` — `l9`' CLAIMS_NEXT='`src/a.txt:9` — `l9`' hd_run ask w1 'Review src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 1 not found"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_reviewer_no_findings() {
+  setup_claims reviewer
+  CLAIMS_FIRST=$'## Findings\nNo findings.\n## Checked\n- src/a.txt' hd_run ask w1 'Review src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_not_contains "$HD_OUT" "--- autofix"
+  assert_contains "$HD_OUT" "STATUS: done"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_reviewer_absent() {
+  setup_claims reviewer
+  mkdir -p tests
+  printf 'callFoo()\n' > tests/x_test.go
+  git add tests/x_test.go
+  CLAIMS_FIRST='ABSENT: `callFoo(`' CLAIMS_NEXT='callFoo( occurs in tests/x_test.go:1, a test' hd_run ask w1 'Find callFoo.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 1 absent found"
+  assert_contains "$HD_OUT" "--- claims: 0 cited, 0 not found; 0 absent, 0 found in repo"
+  assert_eq 2 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_scope_reviewer_without_scope() {
+  hd_run spawn w1 reviewer
+  assert_eq 0 "$HD_RC" "hd spawn w1"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+printf 'changed\n' >> src/a.txt
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask w1 'Review the change.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- scope: 1 changed, 1 outside Scope"
+  assert_contains "$HD_OUT" "src/a.txt"
+}
+
+case_scope_worker_without_scope() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+printf 'changed\n' >> src/a.txt
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_not_contains "$HD_OUT" "--- scope"
+}
+
 case_scope_outside_file() {
   spawn_w1
   write_hook <<'EOF'
@@ -696,6 +756,11 @@ run_case ask_claims_c4 case_claims_c4
 run_case ask_claims_c5 case_claims_c5
 run_case ask_claims_c6 case_claims_c6
 run_case ask_claims_c7 case_claims_c7
+run_case ask_claims_reviewer case_claims_reviewer
+run_case ask_claims_reviewer_no_findings case_claims_reviewer_no_findings
+run_case ask_claims_reviewer_absent case_claims_reviewer_absent
+run_case ask_scope_reviewer_without_scope case_scope_reviewer_without_scope
+run_case ask_scope_worker_without_scope case_scope_worker_without_scope
 write_red_hook() {
   write_hook <<'EOF'
 #!/usr/bin/env bash

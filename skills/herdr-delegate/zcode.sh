@@ -128,7 +128,7 @@ zcode_resolved_thinking() {
 
 zcode_disallowed() {
   case "$1" in
-    scout) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode Edit ApplyPatch' ;;
+    scout|reviewer) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode Edit ApplyPatch' ;;
     researcher) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode Bash Edit ApplyPatch' ;;
     *) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode' ;;
   esac

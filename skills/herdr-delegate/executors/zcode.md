@@ -1,6 +1,6 @@
 # ZCode executor
 
-ZCode runs every role (sidekick, worker, scout, researcher) in one persistent interactive TUI inside its Herdr pane; `hd` sends each brief to that pane and reads the reply from ZCode's hooks. Select ZCode with `"harness": "zcode"` in a slot or the `default` of hd's config, or with `--agent zcode`.
+ZCode runs every role (sidekick, worker, scout, reviewer, researcher) in one persistent interactive TUI inside its Herdr pane; `hd` sends each brief to that pane and reads the reply from ZCode's hooks. Select ZCode with `"harness": "zcode"` in a slot or the `default` of hd's config, or with `--agent zcode`.
 
 Tested with the official CLI **0.17.1** at [fec9759](https://github.com/zai-org/ZCode/commit/fec975905a2abd4c07e35c40d51fa097a2258ec9) and Herdr 0.9.5 on Linux ARM64, using a local test API, DeepSeek V4.1 Flash through OpenCode Go, and DeepSeek V4.1 Flash through Command Code (`openai-chat-completions` at `https://api.commandcode.ai/provider/v1`). Live `hd` runs covered worker and scout spawn, ask with Check and Scope, follow-up asks, and stop and resume with the conversation kept; permission dialogs, failure retries, and timeouts were exercised against the TUI and the test suite. Other platforms and CLI versions are unverified.
 
