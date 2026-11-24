@@ -55,11 +55,15 @@ zcode_source_provider() {
   printf '%s\n' "${ZCODE_PERSONAL_PROVIDER_CONFIG_FILE:-${ZCODE_DATA_BASE_DIR:-$HOME}/.zcode/v2/provider_config.json}"
 }
 
-zcode_validate_model() {
+zcode_valid_model() {
   local model="$1"
   [[ -z "$model" ]] && return 0
-  [[ "$model" == */* && "$model" != /* && "$model" != */ ]] || die "zcode model must be providerId/modelId"
-  [[ "${model#*/}" != /* ]] || die "zcode model must be providerId/modelId"
+  [[ "$model" == */* && "$model" != /* && "$model" != */ ]] || return 1
+  [[ "${model#*/}" != /* ]] || return 1
+}
+
+zcode_validate_model() {
+  zcode_valid_model "$1" || die "zcode model must be providerId/modelId"
 }
 
 zcode_render_provider() {
@@ -244,6 +248,7 @@ zcode_save_session() {
 
 spawn_zcode() {
   local name="$1" role="$2" cwd="$3" model="${4:-}" thinking="${5:-}" session="$6"
+  local slot="${7:-$2}" fallback="${8:-[]}"
   local bin source dir profile_home rd pane provider_tmp model_id
   zcode_validate_name "$name"
   bin="$(zcode_resolve_bin)"
@@ -251,8 +256,6 @@ spawn_zcode() {
   role_tools "$role" >/dev/null
   [[ -x "$SKILL_DIR/zcode-launch" ]] || die "missing ZCode launcher: $SKILL_DIR/zcode-launch"
   [[ -z "$session" ]] || die "zcode sessions are not imported with --session; use hd resume"
-  model="${model:-$DEFAULT_MODEL}"
-  thinking="${thinking:-$DEFAULT_THINKING}"
   zcode_validate_model "$model"
   source="$(zcode_source_provider)"
   [[ -r "$source" ]] || die "configure ZCode first: missing personal provider config"
@@ -289,7 +292,7 @@ spawn_zcode() {
   rm -f "$dir/session-id" "$dir/request" "$dir/line" "$dir/turn" "$dir/settled"
 
   pane="$(place_pane "$rd" "$cwd")"
-  record_spawn "$rd" "$pane" "$name" "$role" zcode "$model" "$cwd"
+  record_spawn "$rd" "$pane" "$name" "$role" zcode "$model" "$cwd" "$slot" "$thinking" "$fallback"
   zcode_write_private "$dir/pane" "$pane" || die "could not write the ZCode state"
   zcode_launch_pane "$name"
   zcode_wait_ready "$pane"
@@ -301,6 +304,7 @@ resume_zcode() {
   local name="$1"; shift
   zcode_validate_name "$name"
   local cwd="" model="" thinking="" dir profile_home rd role bin saved_model saved_thinking pane session_id
+  local saved_slot saved_fallback
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --cwd) cwd="$2"; shift 2 ;;
@@ -309,6 +313,7 @@ resume_zcode() {
       *) usage ;;
     esac
   done
+  config_json "$(config_path)" >/dev/null
   rd="$(run_dir)"
   dir="$(zcode_dir "$name")"
   profile_home="$(zcode_home "$name")"
@@ -343,7 +348,9 @@ resume_zcode() {
   fi
 
   pane="$(place_pane "$rd" "$cwd")"
-  record_spawn "$rd" "$pane" "$name" "$role" zcode "$saved_model" "$cwd"
+  saved_slot="$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")"
+  saved_fallback="$(cat "$rd/$name.fallback" 2>/dev/null || printf '[]\n')"
+  record_spawn "$rd" "$pane" "$name" "$role" zcode "$saved_model" "$cwd" "$saved_slot" "$saved_thinking" "$saved_fallback"
   zcode_write_private "$dir/pane" "$pane" || die "could not write the ZCode state"
   zcode_launch_pane "$name"
   zcode_wait_ready "$pane"

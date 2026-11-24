@@ -32,8 +32,7 @@ jq -nc --args '$ARGS.positional' -- "$@" >> "$FAKE_DIR/zcode.args"
 SCRIPT
   chmod +x "$bin/zcode"
   export PATH="$bin:$PATH"
-  export HD_HARNESS=zcode
-  unset HD_MODEL HD_THINKING
+  hd_config '{"default":{"harness":"zcode","model":"local/base"}}'
 }
 
 zstate() { zcode_state_dir "${1:-w1}"; }
@@ -112,7 +111,7 @@ case_spawn_tui() {
   zcode_setup
   printf 'Parent rule: inherit me.\n' > "$CASE_TMP/AGENTS.md"
   printf 'Project rule: keep it brief.\n' > AGENTS.md
-  export HD_MODEL='local/vendor/model' HD_THINKING=high
+  hd_config '{"default":{"harness":"zcode","model":"local/vendor/model","thinking":"high"}}'
   local source_before; source_before="$(cat "$ZCODE_PERSONAL_PROVIDER_CONFIG_FILE")"
   local caller_home="$HOME" caller_data="${ZCODE_DATA_BASE_DIR-}" caller_db="${ZCODE_SESSION_DB_PATH-}"
   hd_run spawn w1 worker
@@ -229,7 +228,8 @@ case_preflight() {
   assert_eq 0 "$calls" "panes after bad model"
 
   zcode_setup
-  hd_run spawn w1 no-such-role
+  hd_config '{"default":{"harness":"zcode","model":"local/base"},"slots":{"ghost":{"role":"no-such-role"}}}'
+  hd_run spawn w1 ghost
   assert_eq 1 "$HD_RC" "spawn with an unknown role"
   assert_contains "$HD_OUT" 'no role file' "bad role message"
   calls="$(pane_calls)"
@@ -608,6 +608,46 @@ SCRIPT
   assert_idle_after_first_send
 }
 
+case_fallback_to_pi() {
+  zcode_setup
+  printf 'prov m1\n' > "$FAKE_DIR/pi-models"
+  hd_config '{"default":{"harness":"zcode","model":"local/base"},"slots":{"worker":{"fallback":[{"harness":"pi","model":"prov/m1"}]}}}'
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "zcode spawn"
+  local state; state="$(zstate w1)"
+  write_on_enter <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+pane="$1"
+source "$HD_TEST_LIB"
+state="$(zcode_state_dir w1)"
+count="$(cat "$FAKE_DIR/on-enter-count" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_DIR/on-enter-count"
+mkdir -p "$state/log"
+jq -nc --arg s "sess-f$count" --arg t "turn-f$count" --arg p "$(<"$state/line")" \
+  '{hookEventName:"UserPromptSubmit",sessionId:$s,turnId:$t,prompt:$p}' >> "$state/events.jsonl"
+jq -nc --arg s "sess-f$count" --arg t "turn-f$count" --arg m 'TOP_SECRET_API_RESPONSE' \
+  '{level:"error",event:"turn.failed",module:"core.runtime",status:"failed",sessionId:$s,turnId:$t,message:"Turn failed",error:{name:"Error",message:$m}}' >> "$state/log/zcode-test.jsonl"
+herdr pane report-agent --source llstack:zcode --agent zcode --state working "$pane" >/dev/null 2>&1 || true
+SCRIPT
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "moved off zcode
+STATUS: done"
+EOF
+  hd_run ask w1 'Fail twice, then switch.' --timeout 3000
+  assert_eq 0 "$HD_RC" "fallback ask exit"
+  assert_contains "$HD_OUT" '--- fallback: local/base → prov/m1' "fallback line"
+  assert_contains "$HD_OUT" 'STATUS: done' "replacement envelope"
+  assert_contains "$HD_OUT" 'moved off zcode' "replacement reply"
+  local agent_file
+  agent_file="$(find "$XDG_CACHE_HOME/herdr-delegate" -name w1.agent -print -quit)"
+  assert_eq 'pi' "$(cat "$agent_file")" ".agent after the switch"
+}
+
 case_cancelled() {
   zcode_setup
   hd_run spawn w1 worker
@@ -636,7 +676,7 @@ SCRIPT
 
 case_stop_resume() {
   zcode_setup
-  export HD_MODEL='local/vendor/model' HD_THINKING=high
+  hd_config '{"default":{"harness":"zcode","model":"local/vendor/model","thinking":"high"}}'
   hd_run spawn w1 worker
   assert_eq 0 "$HD_RC" "zcode spawn"
   local state; state="$(zstate w1)"
@@ -1130,6 +1170,7 @@ run_case zcode_wait_stale_turns case_wait_stale_turns
 run_case zcode_wait_no_reply case_wait_no_reply
 run_case zcode_provider_retry case_provider_retry
 run_case zcode_provider_failure_twice case_provider_failure_twice
+run_case zcode_fallback_to_pi case_fallback_to_pi
 run_case zcode_cancelled case_cancelled
 run_case zcode_stop_resume case_stop_resume
 run_case zcode_resume_after_tui_exit case_resume_after_tui_exit

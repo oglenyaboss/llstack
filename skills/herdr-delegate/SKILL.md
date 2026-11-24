@@ -5,7 +5,7 @@ description: "Lead mode in Herdr: agents in panes execute while you decide, brie
 
 # Herdr delegate
 
-You are the **lead**: you decide, brief, and verify; agents in Herdr panes execute, usually on a cheaper model than yours (harness and model come from `HD_HARNESS`, `HD_MODEL`, `HD_THINKING`; `--agent`, `--model`, `--thinking` override per agent). Model and thinking are the user's choice: pass `--model` only with an ID the user named, written exactly as `pi --list-models` prints it, and keep thinking at `max` unless the user names another level. Agents copy well, invent badly, and follow the brief literally, never questioning it. So the result is only as good as the brief, and an error in the brief passes your verification, because you verify against that same brief. Logs, test output, and payloads stay in files; you read the lines you decide on.
+You are the **lead**: you decide, brief, and verify; agents in Herdr panes execute, usually on a cheaper model than yours (harness, model and thinking come from a slot in hd's [config](#configuration); `--agent`, `--model`, `--thinking` override per agent). Model and thinking are the user's choice: pass `--model` only with an ID the user named, written the way its harness takes it (for pi, exactly as `pi --list-models` prints it), and `--thinking` only with a level the user named. Agents copy well, invent badly, and follow the brief literally, never questioning it. So the result is only as good as the brief, and an error in the brief passes your verification, because you verify against that same brief. Logs, test output, and payloads stay in files; you read the lines you decide on.
 
 Driver: `hd` in this skill's directory; the commands below call it `hd`. Run it bare for usage.
 
@@ -31,7 +31,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
    - `needs_decision`: decide, or ask the user if the choice is theirs, then `hd ask` the same agent; it keeps its context. A brief that contradicts the code is your error: fix the brief.
    - `failed`: send the same agent the concrete defect. After two failed corrections, do it yourself or re-brief a fresh worker.
    - `blocked_ui`: the agent shows a dialog. Ask the user before answering it. For Codex this includes the hook-review and folder-trust dialogs at startup; hd reports them before sending the brief.
-   - `provider_error`: `hd` already retried once. Check the working tree, then re-ask or re-brief. A 401 or 403 is a key or subscription: report the agent and model to the user, who picks the model.
+   - `provider_error`: `hd` already retried once and went through the slot's `fallback`; the output names every model it tried. Check the working tree, then re-ask or re-brief. A 401 or 403 is a key or subscription: report the agent and model to the user, who picks the model.
    - `cancelled`: the turn was interrupted. Check the working tree before deciding whether to continue.
    - `tui_exited`: the executor closed before finishing. Inspect its diagnostics and diff, then use `hd resume` if the task should continue.
    - To investigate a concrete sign of a problem, `hd peek <name>`. Routine waiting uses the task handle.
@@ -99,7 +99,31 @@ These are documented limits, not security boundaries. Hand a brief to an agent o
 
 `bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and any Herdr integration its executor needs. An executor on `PATH`: pi (every role), Codex (scouts and workers), or ZCode (every role after [its one-time setup](executors/zcode.md)). Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
 
-Configuration is environment only, and all of it is optional: `HD_HARNESS` (`pi`, `codex`, or `zcode`), `HD_MODEL`, `HD_THINKING`, `HD_PI_EXTENSIONS` (colon-separated), `PI_CODING_AGENT_DIR`. For ZCode, `HD_MODEL` is `providerId/modelId`, `HD_THINKING` needs model support, and provider keys stay in its personal config; [executors/zcode.md](executors/zcode.md) has its private profile and limits. Per agent: `hd spawn <name> <role> --agent codex --model M --thinking T --cwd DIR`.
+The harness, model and thinking come from the [config file](#configuration); `PI_CODING_AGENT_DIR` points at pi's agent directory. For ZCode, the model is `providerId/modelId`, thinking needs model support, and provider keys stay in its personal config; [executors/zcode.md](executors/zcode.md) has its private profile and limits. Per agent: `hd spawn <name> <slot> --agent codex --model M --thinking T --cwd DIR`.
+
+## Configuration
+
+`hd spawn <name> <slot>` takes the harness, model and thinking from a slot in `${XDG_CONFIG_HOME:-$HOME/.config}/hd/config.json`, or the file `HD_CONFIG` names:
+
+```json
+{
+  "default": {"harness": "zcode", "model": "provA/model-a", "thinking": "max",
+              "fallback": [{"harness": "pi", "model": "provB/model-a"}]},
+  "slots": {
+    "researcher": {"harness": "pi", "model": "provB/model-a",
+                   "pi_extensions": ["~/path/to/pi-web-access/index.ts"]},
+    "review-b": {"role": "scout", "harness": "codex", "model": "<model>"}
+  },
+  "providers": {"provA": {"pi_extension": "~/path/to/provA-extension.ts"}}
+}
+```
+
+- A slot holds `role`, `harness`, `model`, `thinking`, `pi_extensions` and `fallback`; a field the slot leaves out comes from `default`. `role` defaults to the slot's name, so the slots `sidekick`, `worker`, `scout` and `researcher` exist without an entry.
+- `model` is written the harness's way: pi's exact ID from `pi --list-models`, Codex's model name, ZCode's `providerId/modelId`. Codex reads `thinking` as its reasoning effort, with `max` sent as `xhigh`.
+- `pi_extensions` load into every pi agent of the slot; `providers.<id>.pi_extension` loads when a pi model of the slot, or of its fallback, belongs to provider `<id>`. A researcher on pi needs a web-search extension here.
+- `fallback` lists replacements, each overriding `harness`, `model` or `thinking`. When a provider error survives the one retry, `hd` closes the agent's pane, starts the same name on the next replacement with a fresh session, sends the brief again, and prints `--- fallback: <model> → <model>: <error>`. The agent stays on the replacement; a new spawn starts from the slot's own model.
+- `--agent`, `--model` and `--thinking` override the slot for that one agent.
+- `hd spawn` refuses, before it creates a pane, when the file is missing or not JSON, when the slot resolves no model, an unknown harness, a role its harness does not run, or a pi ID that is not exact, and while the environment still sets one of the `HD_*` variables that carried harness, model, thinking or pi extensions before the config file.
 
 ## Tests
 
