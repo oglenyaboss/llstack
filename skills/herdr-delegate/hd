@@ -110,6 +110,20 @@ check_codex_role() {
 
 [[ "${HERDR_ENV:-}" == 1 ]] || die "not inside Herdr (HERDR_ENV!=1)"
 
+in_own_pane() {
+  local shell pid=$$
+  shell="$(herdr pane process-info --pane "$HERDR_PANE_ID" 2>/dev/null | jq -r '.result.process_info.shell_pid // empty')"
+  [[ -n "$shell" ]] || return 1
+  while (( pid > 1 )); do
+    (( pid == shell )) && return 0
+    pid="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+    [[ -n "$pid" ]] || return 1
+  done
+  return 1
+}
+
+in_own_pane || die "HERDR_PANE_ID=$HERDR_PANE_ID is not this process's pane: run hd from the pane that owns its agents"
+
 digest() {
   if command -v md5sum >/dev/null 2>&1; then md5sum; else md5 -q; fi
 }

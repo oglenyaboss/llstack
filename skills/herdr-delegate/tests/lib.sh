@@ -83,6 +83,7 @@ case_setup() {
   export PATH="$ROOT/tests/fake:$PATH"
   export HERDR_ENV=1
   export HERDR_PANE_ID=test:p0
+  export FAKE_SHELL_PID=$$
   export HERDR_WORKSPACE_ID=w1
   unset HD_HARNESS HD_MODEL HD_THINKING HD_PI_EXTENSIONS HERDR_BIN_PATH
   hd_config '{"default":{"harness":"pi","model":"prov/m1"}}'

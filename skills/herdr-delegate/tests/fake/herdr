@@ -155,6 +155,11 @@ pane() {
       [[ -d "$dir" && ! -f "$dir/closed" ]] || { printf '{"error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$pane" >&2; exit 1; }
       jq -nc --arg pane "$pane" '{result:{pane:{pane_id:$pane,tab_id:"w1:t1",workspace_id:"w1"}}}'
       ;;
+    process-info)
+      local pane="${2:-}" pid
+      pid="$(cat "$(pane_dir "$pane")/shell-pid" 2>/dev/null || printf '%s' "$FAKE_SHELL_PID")"
+      jq -nc --arg pane "$pane" --argjson pid "$pid" '{result:{process_info:{pane_id:$pane,shell_pid:$pid}}}'
+      ;;
     split)
       local anchor="" direction=right seq dir rows
       while [[ $# -gt 0 ]]; do

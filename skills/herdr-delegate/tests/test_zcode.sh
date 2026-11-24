@@ -104,7 +104,7 @@ case_invalid_name() {
   assert_exists "$victim/sentinel" "invalid name cannot erase another profile"
   assert_eq 1 "$HD_RC" "invalid agent name"
   assert_contains "$HD_OUT" 'agent name' "invalid name diagnostic"
-  [[ ! -s "$FAKE_DIR/calls.log" ]] || t_fail "invalid name reached Herdr"
+  ! grep -qv $'^pane\tprocess-info\t' "$FAKE_DIR/calls.log" 2>/dev/null || t_fail "invalid name reached Herdr beyond the pane check"
 }
 
 case_spawn_tui() {
