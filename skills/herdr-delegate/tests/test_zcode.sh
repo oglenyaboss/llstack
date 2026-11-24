@@ -1119,6 +1119,17 @@ case_roles() {
 }
 
 
+case_reviewer_role() {
+  zcode_setup
+  local state tools
+  hd_run spawn rv reviewer
+  assert_eq 0 "$HD_RC" "reviewer spawn"
+  state="$(zstate rv)"
+  tools="$(cat "$state/disallowed")"
+  assert_contains "$tools" 'Edit ApplyPatch' "reviewer edit tools"
+  assert_not_contains "$tools" ' Bash ' "reviewer keeps Bash"
+}
+
 case_ask_in_flight() {
   zcode_setup
   hd_run spawn w1 worker
@@ -1153,6 +1164,7 @@ run_case zcode_spawn_tui case_spawn_tui
 run_case zcode_spawn_preserves_state case_spawn_preserves_state
 run_case zcode_model_selection case_model_selection
 run_case zcode_roles case_roles
+run_case zcode_reviewer_role case_reviewer_role
 run_case zcode_spawn_failure case_spawn_failure
 run_case zcode_preflight case_preflight
 run_case zcode_wait_stop_before_log case_wait_stop_before_log

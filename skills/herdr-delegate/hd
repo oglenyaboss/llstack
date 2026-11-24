@@ -27,7 +27,7 @@ hd stop <name>
 hd resume <name> [--cwd DIR] [--model M] [--thinking T]
 hd note <name> <text>
 
-slots: config $HD_CONFIG or ~/.config/hd/config.json; built in: sidekick worker scout researcher
+slots: config $HD_CONFIG or ~/.config/hd/config.json; built in: sidekick worker scout reviewer researcher
 EOF
   exit 2
 }
@@ -49,7 +49,7 @@ config_json() {
 
 slot_known() {
   jq -e --arg slot "$2" '(.slots // {} | if type == "object" then has($slot) else false end)
-    or (["sidekick", "worker", "scout", "researcher"] | index($slot) != null)' <<<"$1" >/dev/null
+    or (["sidekick", "worker", "scout", "reviewer", "researcher"] | index($slot) != null)' <<<"$1" >/dev/null
 }
 
 resolve_slot() {
@@ -105,7 +105,7 @@ check_harness() {
 
 check_codex_role() {
   [[ "$4" == codex ]] || return 0
-  [[ "$3" == scout || "$3" == worker ]] || die "slot $2: codex agents run as scout or worker only ($1)"
+  [[ "$3" == scout || "$3" == reviewer || "$3" == worker ]] || die "slot $2: codex agents run as scout, reviewer or worker only ($1)"
 }
 
 [[ "${HERDR_ENV:-}" == 1 ]] || die "not inside Herdr (HERDR_ENV!=1)"
@@ -131,7 +131,7 @@ run_dir() {
 role_tools() {
   case "$1" in
     sidekick|worker) echo "read,grep,find,ls,bash,edit,write,tool_search" ;;
-    scout) echo "read,grep,find,ls,bash,write,tool_search" ;;
+    scout|reviewer) echo "read,grep,find,ls,bash,write,tool_search" ;;
     researcher) echo "read,write,web_search,fetch_content,get_search_content,tool_search" ;;
     *) die "unknown role: $1" ;;
   esac
@@ -375,11 +375,11 @@ start_agent() {
   fi
 }
 
-# ponytail: codex runs scouts and workers; sidekick and researcher need network and build caches, untried on codex
+# ponytail: codex runs scouts, reviewers and workers; sidekick and researcher need network and build caches, untried on codex
 spawn_codex() {
   local name="$1" role="$2" cwd="$3" model="$4" thinking="${5:-}" session="$6"
   local slot="${7:-$2}" fallback="${8:-[]}"
-  [[ "$role" == scout || "$role" == worker ]] || die "codex agents run as scout or worker only"
+  [[ "$role" == scout || "$role" == reviewer || "$role" == worker ]] || die "codex agents run as scout, reviewer or worker only"
   cwd="$(cd "$cwd" && pwd)"
   local rd pane args=() instructions sandbox effort=() effort_value="$thinking"
   rd="$(run_dir)"
@@ -841,15 +841,18 @@ run_check() {
 }
 
 run_scope() {
-  local name="$1" rd base cwd f p inside changed=() scope=() outside=()
+  local name="$1" rd base cwd role f p inside changed=() scope=() outside=()
   rd="$(run_dir)"
   rm -f "$rd/$name.changed" "$rd/$name.outside"
   base="$(cat "$rd/$name.base" 2>/dev/null || true)"
   [[ -n "$base" ]] || return 0
+  role="$(cat "$rd/$name.role" 2>/dev/null || true)"
   cwd="$(agent_cwd "$name")"
   mapfile -t changed < <(git -C "$cwd" -c core.quotePath=false diff --no-renames --name-only "$base" "$(snapshot_tree "$cwd")")
   printf '%s\n' "${changed[@]}" | sed '/^$/d' > "$rd/$name.changed"
-  [[ -s "$rd/$name.scope" ]] || return 0
+  if [[ ! -s "$rd/$name.scope" ]]; then
+    [[ "$role" == reviewer && ${#changed[@]} -gt 0 ]] || return 0
+  fi
   mapfile -t scope < "$rd/$name.scope"
   for f in "${changed[@]}"; do
     inside=0
@@ -1013,7 +1016,10 @@ run_claims() {
   local trim='s/[[:space:]]+//g' lineref='^:?[0-9]+((-|–)[0-9]+)?$'
   rd="$(run_dir)"
   rm -f "$rd/$name.claims"
-  [[ "$(cat "$rd/$name.role" 2>/dev/null || true)" == scout ]] || return 0
+  case "$(cat "$rd/$name.role" 2>/dev/null || true)" in
+    scout|reviewer) ;;
+    *) return 0 ;;
+  esac
   out="$(cat "$rd/$name.out" 2>/dev/null || true)"
   [[ -f "$out" ]] || return 0
   cwd="$(agent_cwd "$name")"

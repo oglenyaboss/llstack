@@ -142,7 +142,7 @@ case_codex_role_refused() {
   hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"sk":{"role":"sidekick","harness":"codex","model":"gpt-x"}}}'
   hd_run spawn x sk
   assert_eq 1 "$HD_RC" "codex sidekick"
-  assert_contains "$HD_OUT" "scout or worker" "codex role message"
+  assert_contains "$HD_OUT" "scout, reviewer or worker" "codex role message"
   assert_eq 0 "$(pane_calls)" "panes after a codex role refusal"
 }
 
@@ -150,7 +150,7 @@ case_fallback_codex_role_refused() {
   hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"sidekick":{"fallback":[{"harness":"codex"}]}}}'
   hd_run spawn x sidekick
   assert_eq 1 "$HD_RC" "fallback codex sidekick"
-  assert_contains "$HD_OUT" "scout or worker" "fallback codex role message"
+  assert_contains "$HD_OUT" "scout, reviewer or worker" "fallback codex role message"
   assert_eq 0 "$(pane_calls)" "panes after a fallback codex role refusal"
 }
 
@@ -272,6 +272,19 @@ case_extensions_and_scout() {
   assert_contains "$tools" "write" "scout tools"
 }
 
+case_reviewer_pi_tools() {
+  hd_run spawn rv reviewer
+  assert_eq 0 "$HD_RC" "hd spawn reviewer"
+  assert_calls_nonempty
+  local args tools
+  args="$(start_args rv)"
+  assert_file_contains "$args" "--append-system-prompt $ROOT/roles/reviewer.md" "reviewer role prompt"
+  assert_file_contains "$args" "--tools read,grep,find,ls,bash,write,tool_search" "reviewer tools"
+  tools="$(sed -n 's/.*--tools \([^ ]*\).*/\1/p' "$args")"
+  assert_eq "read,grep,find,ls,bash,write,tool_search" "$tools" "reviewer tools"
+  assert_not_contains "$tools" "edit" "reviewer tools"
+}
+
 case_missing_cwd() {
   set +e
   HD_OUT="$("$TIMEOUT" 10 "$HD" spawn w1 worker --cwd "$PWD/missing" 2>&1)"
@@ -314,7 +327,19 @@ case_codex_roles() {
 
   hd_run spawn sk sidekick --agent codex
   assert_eq 1 "$HD_RC" "hd spawn codex sidekick"
-  assert_contains "$HD_OUT" "scout or worker only"
+  assert_contains "$HD_OUT" "scout, reviewer or worker only"
+}
+
+case_codex_reviewer() {
+  hd_run spawn rv reviewer --agent codex --model gpt-x
+  assert_eq 0 "$HD_RC" "hd spawn codex reviewer"
+  local reviewer_args=("$FAKE_DIR"/agents/rv-*/start.args)
+  assert_file_contains "${reviewer_args[0]}" "--kind codex"
+  assert_file_contains "${reviewer_args[0]}" "-s workspace-write"
+
+  hd_run spawn sk sidekick --agent codex --model gpt-x
+  assert_eq 1 "$HD_RC" "hd spawn codex sidekick"
+  assert_contains "$HD_OUT" "scout, reviewer or worker only"
 }
 
 case_model_near_miss_refused() {
@@ -376,6 +401,8 @@ run_case spawn_records case_spawn_records
 run_case spawn_resume_keeps_slot case_resume_keeps_slot
 run_case spawn_ls_model case_ls_model
 run_case spawn_extensions_and_scout case_extensions_and_scout
+run_case spawn_reviewer_pi_tools case_reviewer_pi_tools
 run_case spawn_missing_cwd case_missing_cwd
 run_case spawn_md5_fallback case_md5_fallback
 run_case spawn_codex_roles case_codex_roles
+run_case spawn_codex_reviewer case_codex_reviewer

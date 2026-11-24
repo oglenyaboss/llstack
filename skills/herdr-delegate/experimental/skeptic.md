@@ -2,7 +2,7 @@
 
 Experimental add-on to `herdr-delegate`. Off by default: it adds a review pass, it never replaces the risk policy's reviewers and never lowers a tier. `hd` below is the delegate driver.
 
-You verify the diff against your own brief, so a wrong Decision or a missing Trap passes your verification. The skeptic attacks the diff against the spec instead: a scout on a model family different from yours that gets the spec and the diff and never your brief.
+You verify the diff against your own brief, so a wrong Decision or a missing Trap passes your verification. The skeptic attacks the diff against the spec instead: a `reviewer` on a model family different from yours that gets the spec and the diff and never your brief.
 
 Run it after the Loop's Verify step accepts a writer's diff, when any of these holds:
 
@@ -10,11 +10,11 @@ Run it after the Loop's Verify step accepts a writer's diff, when any of these h
 - the brief carries Decisions the user did not confirm in this session, or the spec is ambiguous;
 - the task failed two corrections: run it on the last diff before you re-brief.
 
-Fill [skeptic-brief.md](skeptic-brief.md) with the whole task's diff: `hd diff w1` when the task took one ask; after corrections, `git diff <commit the task started from>` with new files added via `git add -N`. Then launch through your client's shell tool, picking an agent and model from another family than yours:
+Fill [skeptic-brief.md](skeptic-brief.md) with the whole task's diff: `hd diff w1` when the task took one ask; after corrections, `git diff <commit the task started from>` with new files added via `git add -N`. Then launch through your client's shell tool, from a config slot whose model is from another family than yours:
 
 ```
 hd diff w1 > /tmp/w1.patch
-hd spawn sk-x scout --agent codex      # or --model <other family>; codex takes --thinking low|medium|high|xhigh, default high
+hd spawn sk-x skeptic                 # slot with "role": "reviewer", e.g. "harness": "codex"
 hd ask sk-x @skeptic.md
 ```
 

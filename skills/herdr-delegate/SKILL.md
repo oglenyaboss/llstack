@@ -16,6 +16,7 @@ Codex leads: read [clients/codex.md](clients/codex.md) before the first `hd ask`
 | work | who |
 |---|---|
 | recon: where things live, how a flow runs, call sites, the pattern to copy | scout |
+| review of a diff: the defects it introduces, each with proof | reviewer |
 | code from a brief: backend logic, refactors, tests, UI from a prototype | a fresh worker per brief |
 | runs: tests, builds, stands, docker, databases, measurements, logs, CI logs, driving a TUI | sidekick `sk`: the first `hd ask sk` spawns it; it reports 3–5 numbers and a log path |
 | decisions, briefs, diff review; a change shorter to write than to brief | you |
@@ -38,7 +39,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
    - `done`: verify.
 5. **Verify.** Every claim in SUMMARY is **unverified** until you see its evidence. Done when:
    - writer: the `--- check` block under SUMMARY shows exit=0 and the expected output, `--- red` (when present) shows a non-zero exit, the `--- scope` block shows 0 outside Scope, and you read `hd diff <name>` (exactly what this ask changed) against the brief: every R has its hunk, every Acceptance case its passing test unchanged from the brief, every hunk in scope, every called API exists, every assumption is one you would make;
-   - scout: the `--- claims` block shows 0 not found and 0 found in repo, and you open the `inferred:` claims your decision rests on;
+   - scout or reviewer: the `--- claims` block shows 0 not found and 0 found in repo, and you open the `inferred:` claims your decision rests on;
    - researcher: each decision-critical claim is direct with high confidence, or you opened its source.
    Then record the **lesson**: for each `failed`, brief that contradicted the code, diff you rejected, or correction you sent, run `hd note <name> "<root cause in one line>"`.
 6. **Stop.** `hd stop` one-shot agents once accepted. Use context size from `hd ls` to choose a fresh agent for the next brief. Let the current brief finish; if a context limit actually prevents progress, hand off the evidence and all unfinished requirements to a fresh agent. `hd resume <name>` brings a stopped agent back with its context, model, and cwd, for a follow-up on the same task.
@@ -51,7 +52,7 @@ The assigned brief remains the completion criterion while waiting. Elapsed time,
 
 Two fields of the brief are mechanical here. After the reply, `hd` runs Check in the agent's cwd (10 minute cap) and appends its exit code and output tail under `--- check`, and lists every changed file outside Scope under `--- scope`. Both apply to one ask: repeat them in every correction. The agent shows each Acceptance case red, then green, in SUMMARY. Check runs under pipefail: end it with the test command or pipe into `tail`, never `head`, whose early exit fails the pipe. When the agent reports done and Check fails or files changed outside Scope with no concurrent ask, hd sends the agent the failure, up to two rounds, and shows each round as a `--- autofix` line before the envelope.
 
-For a scout, hd also checks the payload: each cited quote must be in the file within three lines of the cited line, and each `ABSENT:` string must occur nowhere in the repository. Failures go back to the scout in the same autofix rounds and show under `--- claims`.
+For a scout or a reviewer, hd also checks the payload: each cited quote must be in the file within three lines of the cited line, and each `ABSENT:` string must occur nowhere in the repository. Failures go back to the agent in the same autofix rounds and show under `--- claims`. A file a reviewer changes in the repository shows under `--- scope` even when its brief has no Scope.
 
 A scout brief lists its questions and may set `Depth: quick | normal | deep`; without it the scout works at `normal`. `quick` answers from the paths and names in the brief, `deep` follows every call site of the named symbols and reads their tests. The payload opens with `## Questions`: each question gets a cited answer, an `ABSENT:` line, or what stopped the scout.
 
@@ -64,22 +65,23 @@ For a worker whose Check passes, hd reverts the changed non-test files to the as
 | `sidekick` | whole session; runs and measures, remembers the environment | small fixes | logs, measurements |
 | `worker` | one brief; clean start or a parallel worktree | yes | R → file:line → test |
 | `scout` | one brief: its questions at a set depth | no | required: code context with file:line |
+| `reviewer` | one review | no | required: findings with file:line and a failure scenario, or `No findings.` |
 | `researcher` | one question | no | required: sourced research brief |
 
 Each `hd ask` hands the agent a fresh OUTPUT_FILE outside the repo for its payload. Code results live in the working tree, knowledge in the payload. Pass a payload to the next agent by path ("Read <path> first") so it bypasses your context.
 
 ## Review
 
-The `pr-risk` skill sets the tier, the reviewer count and every merge gate; read it before reviewing a branch. Here its reviewers are scouts on the models the project's Workflow section names, all on one brief filled from [../pr-risk/references/review-brief.md](../pr-risk/references/review-brief.md):
+The `pr-risk` skill sets the tier, the reviewer count and every merge gate; read it before reviewing a branch. Here its reviewers run the `reviewer` role ([roles/reviewer.md](roles/reviewer.md)) from config slots that carry the models the project's Workflow section names, all on one brief filled from [../pr-risk/references/review-brief.md](../pr-risk/references/review-brief.md):
 
 ```
-hd spawn rv-a scout --model <model A>
-hd spawn rv-b scout --model <model B>   # High only: a second model family
+hd spawn rv-a review-a                  # slots with "role": "reviewer"
+hd spawn rv-b review-b                  # High only: a second model family
 hd ask rv-a @brief.md                   # launch both through the client's shell tool
 hd ask rv-b @brief.md
 ```
 
-Medium runs one scout. High runs two from different model families in parallel, plus the strong reviewer as a third scout when the change spans several services. Different models find different defects. Merge their findings as `pr-risk` describes; fixes then go through the Loop.
+Medium runs one reviewer. High runs two from different model families in parallel, plus the strong reviewer as a third when the change spans several services. Different models find different defects. Merge their findings as `pr-risk` describes; fixes then go through the Loop.
 
 ## Experimental add-ons
 
@@ -92,14 +94,14 @@ Two extensions of this skill live beside it, off by default and outside the revi
 
 These are documented limits, not security boundaries. Hand a brief to an agent only when you would run its Check yourself.
 
-- **Read-only roles are an instruction, not a sandbox.** A scout has `write` so it can produce its payload, and a Codex scout runs with `-s workspace-write`. A Codex worker runs with `-s danger-full-access`, because the workspace-write sandbox blocks the network and the build caches outside the repo that its tests need. A misbehaving scout can change the working tree; `hd diff` and `git status` are how you find out.
+- **Read-only roles are an instruction, not a sandbox.** A scout or reviewer has `write` so it can produce its payload, and a Codex scout or reviewer runs with `-s workspace-write`. A Codex worker runs with `-s danger-full-access`, because the workspace-write sandbox blocks the network and the build caches outside the repo that its tests need. A misbehaving scout or reviewer can change the working tree; `hd diff` and `git status` are how you find out.
 - **Scope is checked after the turn.** `hd` snapshots the tree before the ask and lists changed files outside Scope after it. Nothing stops the write while it happens. Other asks open in the same tree during this one are named under `--- concurrent`, and their changes land in this ask's lists; give parallel writers their own worktrees.
 - **Check is an arbitrary shell command.** It comes from the brief and runs in the agent's cwd with a 10 minute cap. Treat a brief as code, because `hd` runs part of it.
 - **The journal is local.** `~/.cache/herdr-delegate/` holds payloads, briefs and journal lines in plain text; nothing prunes it.
 
 ## Requirements
 
-`bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and any Herdr integration its executor needs. An executor on `PATH`: pi (every role), Codex (scouts and workers), or ZCode (every role after [its one-time setup](executors/zcode.md)). Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
+`bash` 4.4+, `jq`, `git` 2.31+, and `timeout` or `gtimeout` from GNU coreutils; on macOS, `brew install bash coreutils jq`. Herdr, with the lead running inside a pane (`HERDR_ENV=1`), and any Herdr integration its executor needs. An executor on `PATH`: pi (every role), Codex (scouts, reviewers and workers), or ZCode (every role after [its one-time setup](executors/zcode.md)). Linux and macOS; on Windows, run it in WSL. CI runs the test suite on both systems; live runs with real Herdr panes have been on Linux.
 
 The harness, model and thinking come from the [config file](#configuration); `PI_CODING_AGENT_DIR` points at pi's agent directory. For ZCode, the model is `providerId/modelId`, thinking needs model support, and provider keys stay in its personal config; [executors/zcode.md](executors/zcode.md) has its private profile and limits. Per agent: `hd spawn <name> <slot> --agent codex --model M --thinking T --cwd DIR`.
 
@@ -114,13 +116,13 @@ The harness, model and thinking come from the [config file](#configuration); `PI
   "slots": {
     "researcher": {"harness": "pi", "model": "provB/model-a",
                    "pi_extensions": ["~/path/to/pi-web-access/index.ts"]},
-    "review-b": {"role": "scout", "harness": "codex", "model": "<model>"}
+    "review-b": {"role": "reviewer", "harness": "codex", "model": "<model>"}
   },
   "providers": {"provA": {"pi_extension": "~/path/to/provA-extension.ts"}}
 }
 ```
 
-- A slot holds `role`, `harness`, `model`, `thinking`, `pi_extensions` and `fallback`; a field the slot leaves out comes from `default`. `role` defaults to the slot's name, so the slots `sidekick`, `worker`, `scout` and `researcher` exist without an entry.
+- A slot holds `role`, `harness`, `model`, `thinking`, `pi_extensions` and `fallback`; a field the slot leaves out comes from `default`. `role` defaults to the slot's name, so the slots `sidekick`, `worker`, `scout`, `reviewer` and `researcher` exist without an entry.
 - `model` is written the harness's way: pi's exact ID from `pi --list-models`, Codex's model name, ZCode's `providerId/modelId`. Codex reads `thinking` as its reasoning effort, with `max` sent as `xhigh`.
 - `pi_extensions` load into every pi agent of the slot; `providers.<id>.pi_extension` loads when a pi model of the slot, or of its fallback, belongs to provider `<id>`. A researcher on pi needs a web-search extension here.
 - `fallback` lists replacements, each overriding `harness`, `model` or `thinking`. When a provider error survives the one retry, `hd` closes the agent's pane, starts the same name on the next replacement with a fresh session, sends the brief again, and prints `--- fallback: <model> → <model>: <error>`. The agent stays on the replacement; a new spawn starts from the slot's own model.

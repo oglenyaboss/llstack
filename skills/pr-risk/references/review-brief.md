@@ -17,7 +17,7 @@ A5. Spec conformance: a requirement of the spec missing or implemented different
 A6. Tests: important behavior without a test, or a test that passes by construction.
 
 Requirements:
-R1. Every finding is verified by opening the code: cite `path:line`, quote the 1–3 offending lines, and give a concrete failure scenario (input/state → wrong result). No finding without a scenario. Where a scenario is cheap to run (a pure function, a script), run it and quote the output.
+R1. Every finding is verified by opening the code: cite it on one line as `` `path:line` — `offending line` ``, the line copied from the file, and give a concrete failure scenario (input/state → wrong result). No finding without a scenario. Where a scenario is cheap to run (a pure function, a script), run it and quote the output.
 R2. Severity per finding: high (data loss, wrong behavior users hit, contract/boundary break, secret leak), medium, low.
 R3. Report defects only; style preferences and "could be refactored" stay out.
 R4. Read-only: the only file you write is OUTPUT_FILE. Other agents may run installs/tests in the same directory: ignore node_modules churn.
@@ -27,9 +27,10 @@ Payload (OUTPUT_FILE), in this shape:
 ```
 # Review: <BRANCH>
 ## Findings
-### F1 [high] <one-line claim> — `path:line`
-Quote: ...
+### F1 [high] <one-line claim>
+`path:line` — `offending line`
 Scenario: ...
+Confidence: high | medium
 Axis: A1..A6
 ...
 ## Checked, no issue
@@ -37,6 +38,8 @@ Axis: A1..A6
 ## Impact checked
 - `<symbol or key>`: <N> usages outside the diff, consistent | F<n>
 ```
+
+With no findings, `## Findings` holds exactly `No findings.`
 
 Done when: OUTPUT_FILE has findings ranked high → low; SUMMARY gives counts per severity and the top 3 one-liners.
 
