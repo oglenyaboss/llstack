@@ -71,6 +71,23 @@ case_bad_json() {
   assert_eq 0 "$(pane_calls)" "panes after invalid JSON"
 }
 
+case_config_two_values() {
+  printf '{"default":{"harness":"pi","model":"prov/m1"}}\nnull\n' > "$HD_CONFIG"
+  hd_run spawn w1 worker
+  assert_eq 1 "$HD_RC" "hd spawn with two top-level values"
+  assert_contains "$HD_OUT" "$HD_CONFIG" "config path in the message"
+  assert_contains "$HD_OUT" "is not valid JSON" "two top-level values"
+  assert_eq 0 "$(pane_calls)" "panes after two top-level values"
+}
+
+case_config_empty() {
+  : > "$HD_CONFIG"
+  hd_run spawn w1 worker
+  assert_eq 1 "$HD_RC" "hd spawn with an empty config"
+  assert_contains "$HD_OUT" "is not valid JSON" "empty config"
+  assert_eq 0 "$(pane_calls)" "panes after an empty config"
+}
+
 case_missing_config() {
   export HD_CONFIG="$CASE_TMP/missing-config.json"
   hd_run spawn w1 worker
@@ -224,6 +241,47 @@ case_spawn_records() {
   assert_eq "[]" "$(<"$(run_dir_entry w1.fallback)")" "fallback record"
 }
 
+case_env_empty_refused() {
+  export HD_MODEL=
+  hd_run spawn w1 worker
+  assert_eq 1 "$HD_RC" "hd spawn with an empty HD_MODEL"
+  assert_contains "$HD_OUT" "HD_MODEL" "variable in the message"
+  assert_eq 0 "$(pane_calls)" "panes after an empty env refusal"
+}
+
+case_env_thinking_empty_refused() {
+  export HD_THINKING=
+  hd_run spawn w1 worker
+  assert_eq 1 "$HD_RC" "hd spawn with an empty HD_THINKING"
+  assert_contains "$HD_OUT" "HD_THINKING" "variable in the message"
+  assert_eq 0 "$(pane_calls)" "panes after an empty HD_THINKING"
+}
+
+case_slot_default_role() {
+  printf 'prov m1\n' > "$FAKE_DIR/pi-models"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1","role":"worker"},"slots":{"custom":{}}}'
+  hd_run spawn w custom
+  assert_eq 0 "$HD_RC" "hd spawn w custom"
+  assert_file_contains "$(start_args w)" "--append-system-prompt $ROOT/roles/worker.md" "default.role for a custom slot"
+  hd_run spawn s scout
+  assert_eq 0 "$HD_RC" "hd spawn s scout"
+  assert_file_contains "$(start_args s)" "--append-system-prompt $ROOT/roles/scout.md" "built-in slot keeps its role"
+}
+
+case_resume_when_slot_gone() {
+  printf 'prov m1\nprov m2\n' > "$FAKE_DIR/pi-models"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"custom":{"role":"worker","model":"prov/m2"}}}'
+  hd_run spawn w1 custom
+  assert_eq 0 "$HD_RC" "hd spawn w1 custom"
+  assert_file_contains "$(start_args w1)" "--model prov/m2" "custom model on spawn"
+  hd_run stop w1
+  assert_eq 0 "$HD_RC" "hd stop w1"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"}}'
+  hd_run resume w1
+  assert_eq 0 "$HD_RC" "hd resume after the slot is gone"
+  assert_file_contains "$(start_args w1)" "--model prov/m2" "saved model on resume"
+  assert_file_contains "$(start_args w1)" "--append-system-prompt $ROOT/roles/worker.md" "saved role on resume"
+}
 case_resume_keeps_slot() {
   printf 'prov m1\nprov m2\n' > "$FAKE_DIR/pi-models"
   hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"worker":{"model":"prov/m2","pi_extensions":["/x/resume.ts"]}}}'
@@ -380,13 +438,18 @@ run_case spawn_default_model_near_miss_refused case_default_model_near_miss_refu
 run_case spawn_no_model case_no_model
 run_case spawn_no_harness case_no_harness
 run_case spawn_env_refused case_env_refused
+run_case spawn_env_empty_refused case_env_empty_refused
+run_case spawn_env_thinking_empty_refused case_env_thinking_empty_refused
 run_case spawn_bad_json case_bad_json
+run_case spawn_config_two_values case_config_two_values
+run_case spawn_config_empty case_config_empty
 run_case spawn_missing_config case_missing_config
 run_case spawn_hd_config_path case_hd_config_path
 run_case spawn_unknown_slot case_unknown_slot
 run_case spawn_slot_model case_slot_model
 run_case spawn_slot_harness case_slot_harness
 run_case spawn_custom_slot case_custom_slot
+run_case spawn_slot_default_role case_slot_default_role
 run_case spawn_slot_flags case_slot_flags
 run_case spawn_codex_role_refused case_codex_role_refused
 run_case spawn_fallback_codex_role_refused case_fallback_codex_role_refused
@@ -399,6 +462,7 @@ run_case spawn_codex_thinking_max case_codex_thinking_max
 run_case spawn_codex_thinking_default case_codex_thinking_default
 run_case spawn_records case_spawn_records
 run_case spawn_resume_keeps_slot case_resume_keeps_slot
+run_case spawn_resume_when_slot_gone case_resume_when_slot_gone
 run_case spawn_ls_model case_ls_model
 run_case spawn_extensions_and_scout case_extensions_and_scout
 run_case spawn_reviewer_pi_tools case_reviewer_pi_tools
