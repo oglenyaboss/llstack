@@ -80,13 +80,7 @@ Where sub-issues are unavailable, add the children to a task list in the parent 
 
 ## Batching
 
-The frontier gives you candidates. Batching turns them into PRs:
-
-- same area, same flow, same files;
-- three or four issues, tunable per team;
-- one PR, one commit per issue;
-- high risk alone;
-- a decision issue alone.
+The frontier gives you candidates; the batch rules in [execution-loop.md](execution-loop.md), step 3, turn them into a PR.
 
 When two ready issues conflict, one of them is not ready. Do not resolve the conflict inside a batch; send the pair back to triage with the question.
 

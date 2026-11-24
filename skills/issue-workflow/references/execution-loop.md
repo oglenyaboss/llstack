@@ -22,13 +22,16 @@ Improvising here is how a batch of small changes becomes one surprising PR.
 
 ### 3. Assemble a batch
 
-A batch is a set of issues in one area that one PR can carry.
+A batch is every ready issue outside an epic, carried by one PR.
 
-- Three or four issues by default. The number is a team setting, not a law.
+- When the repo has a batching script, run it: its output is the plan. Show it to the decision owner, who approves or trims the batch. Do not cut batches by hand.
 - One PR per batch, one commit per issue. The commit message names the issue number.
-- High risk always travels alone, in its own PR. Never mix a high-risk change with anything else.
-- A decision ticket never rides in a batch. It gets its own PR so the accepted behavior is reviewable alone.
-- Issues that touch the same files or the same flow belong together. Issues in different services do not.
+- No size limit. The owner trims the batch when its hot spots will not fit one reading.
+- The batch's risk tier is the highest tier among its issues. The gate for that tier runs once, for the whole batch.
+- An epic's children never ride in a batch; they go through the epic's branch. Large and breaking changes belong in an epic.
+- Order: all commits → review → fixes → e2e → the owner's approval. The approval covers one commit, so nothing changes after it.
+- Review goes commit by commit: each commit against its issue, then the seams between commits in the whole diff.
+- An issue that fails review leaves the batch: revert its commit or rebuild the branch without it, and apply `rework`. The rest go on.
 
 Claim each issue with an assignee before starting. Release the claim if you stop.
 

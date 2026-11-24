@@ -4,6 +4,7 @@ Context (read first):
 - Diff under review: `git diff <BASE>...HEAD`; `git log --oneline <BASE>..HEAD` for the commit story. <Generated files, fixtures, prototypes: name them here as "skim, do not review line by line".>
 - Risk tier: <low/medium/high from the project's classifier, with the files that set it, or "none">. On high, spend the depth on those files first.
 - Spec / plan / prototype / issue: <paths or issue numbers, or "none">. The issue's decisions and acceptance criteria are the spec for A5.
+- Batch: <a table `issue → commit sha → acceptance criteria`, or "none">. For a batch, A5 runs per commit: `git show <sha>` against its issue. Then check the seams between commits in the whole diff: one commit breaking another's assumption is an A1 finding.
 - Recurring findings: <the project's list, e.g. docs/agents/recurring-findings.md, or "none">. Check every changed file against each.
 - Project rules: <CLAUDE.md / AGENTS.md sections that define invariants and merge blockers>. Contracts doc: <path, or "none">.
 - Main code areas: <dirs that carry the change>.
