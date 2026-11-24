@@ -39,10 +39,10 @@ config_path() { printf '%s\n' "${HD_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/hd
 config_json() {
   local path="$1" var body
   for var in HD_HARNESS HD_MODEL HD_THINKING HD_PI_EXTENSIONS; do
-    [[ -z "${!var:-}" ]] || die "$var is set; hd reads $path now: move the value there and unset $var"
+    [[ -z "${!var+x}" ]] || die "$var is set; hd reads $path now: move the value there and unset $var"
   done
   [[ -f "$path" ]] || die "no config file $path"
-  body="$(jq -c 'if type == "object" then . else empty end' "$path" 2>/dev/null)" || die "$path is not valid JSON"
+  body="$(jq -c -s 'if length == 1 and (.[0] | type) == "object" then .[0] else empty end' "$path" 2>/dev/null)" || die "$path is not valid JSON"
   [[ -n "$body" ]] || die "$path is not valid JSON"
   printf '%s\n' "$body"
 }
@@ -61,7 +61,7 @@ resolve_slot() {
     | ($cfg.slots // {} | obj) as $slots
     | ($cfg.default // {} | obj) as $def
     | ($slots[$slot] // {} | obj) as $s
-    | ($s.role // $slot) as $role
+    | ($s.role // (if (["sidekick", "worker", "scout", "reviewer", "researcher"] | index($slot)) != null then $slot else ($def.role // $slot) end)) as $role
     | ($s.harness // $def.harness) as $base_harness
     | ($s.model // $def.model) as $base_model
     | ($s.thinking // $def.thinking) as $base_thinking
@@ -566,6 +566,7 @@ cmd_ask() {
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
   rm -f "$rd/$name.tried"
+  rm -f "$rd/$name.tried-errors"
   rm -f "$rd/$name.autofix"
   if head_commit="$(git -C "$(agent_cwd "$name")" rev-parse HEAD 2>/dev/null)"; then
     printf '%s\n' "$head_commit" > "$rd/$name.head"
@@ -638,9 +639,13 @@ answer_turn() {
       exit 0
     fi
   elif [[ $rc -ne 0 ]]; then
-    echo "STATUS: still_working"
-    echo "$name $note; continue with: hd wait $name"
-    exit 0
+    if grep -q timeout <<<"$res"; then
+      echo "STATUS: still_working"
+      echo "$name $note; continue with: hd wait $name"
+      exit 0
+    fi
+    echo "$res" >&2
+    exit "$rc"
   fi
   finish "$name" "$timeout"
 }
@@ -652,8 +657,21 @@ fallback_ready() {
   jq -e 'type == "array" and length > 0' "$rd/$name.fallback" >/dev/null 2>&1
 }
 
+fallback_refusal() {
+  local name="$1" rd slot role config body
+  rd="$(run_dir)"
+  slot="$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")"
+  role="$(cat "$rd/$name.role" 2>/dev/null || true)"
+  config="$(config_path)"
+  if body="$(config_json "$config" 2>/dev/null)" && slot_known "$body" "$slot" &&
+    [[ "$(resolve_slot "$body" "$slot" "" "" "" 0 0 0 | jq -r .role)" == "$role" ]]; then
+    return 1
+  fi
+  printf 'fallback skipped: slot %s no longer resolves to role %s in %s\n' "$slot" "$role" "$config"
+}
+
 fallback_switch() {
-  local name="$1" err="$2" rd list entry rest harness model thinking old out slot cwd pane
+  local name="$1" err="$2" rd list entry rest harness model thinking old out slot cwd pane n zdir
   rd="$(run_dir)"
   list="$(<"$rd/$name.fallback")"
   entry="$(jq -c '.[0]' <<<"$list")"
@@ -664,8 +682,15 @@ fallback_switch() {
   old="$(agent_model "$name")"
   out="$(<"$rd/$name.out")"
   pane="$(agent_pane "$name" 2>/dev/null)" || pane=""
-  printf -- '--- fallback: %s → %s: %s\n' "$old" "$model" "$err"
   printf '%s\n' "$old" >> "$rd/$name.tried"
+  n="$(grep -c '' "$rd/$name.tried")"
+  zdir="$(zcode_dir "$name")"
+  if [[ "$(agent_kind "$name")" == zcode && -d "$zdir/log" ]]; then
+    mv -- "$zdir/log" "$rd/$name.zcode-log-$n"
+    err="${err/"$zdir/log"/"$rd/$name.zcode-log-$n"}"
+  fi
+  printf -- '--- fallback: %s → %s: %s\n' "$old" "$model" "$err"
+  printf '%s\n' "${err//$'\n'/ }" >> "$rd/$name.tried-errors"
   [[ -z "$pane" ]] || herdr pane close "$pane" >/dev/null
   cmd_spawn "$name" "$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")" --cwd "$(agent_cwd "$name")" \
     --agent "$harness" --model "$model" --thinking "$thinking" >/dev/null
@@ -683,7 +708,7 @@ fallback_message() {
 }
 
 settle_ask() {
-  local name="$1" timeout="$2" status err rd settled retry_rc=0 res
+  local name="$1" timeout="$2" status err rd settled retry_rc=0 res skip=""
   rd="$(run_dir)"
   if [[ "$(agent_kind "$name")" == zcode ]]; then
     settled="$(cat "$(zcode_settled_file "$name")" 2>/dev/null || true)"
@@ -713,14 +738,18 @@ settle_ask() {
   if [[ -n "$err" ]]; then
     if [[ -f "$rd/$name.retried" ]]; then
       if fallback_ready "$name"; then
-        fallback_switch "$name" "$err"
-        answer_turn "$name" "$(fallback_message "$name")" "$timeout" fallback "moved to a fallback model"
-        return
+        skip="$(fallback_refusal "$name")" || skip=""
+        if [[ -z "$skip" ]]; then
+          fallback_switch "$name" "$err"
+          answer_turn "$name" "$(fallback_message "$name")" "$timeout" fallback "moved to a fallback model"
+          return
+        fi
       fi
       echo "STATUS: provider_error"
       echo "$err (already retried once; check the working tree, then re-ask or re-brief)"
       echo "agent=$(agent_kind "$name") model=$(agent_model "$name")"
       echo "models tried: $(tried_text "$name")"
+      [[ -z "$skip" ]] || printf '%s\n' "$skip"
       return
     fi
     touch "$rd/$name.retried"
@@ -754,7 +783,7 @@ settle_ask() {
   if [[ -f "$rd/$name.check-exit" ]]; then check_rc="$(<"$rd/$name.check-exit")"; fi
   if [[ -f "$rd/$name.outside" ]]; then outside="$(<"$rd/$name.outside")"; fi
   if [[ -n "$check_rc" && "$check_rc" != 0 ]]; then check_fail=1; fi
-  if [[ -n "$outside" && ! -f "$rd/$name.concurrent" ]]; then outside_fail=1; fi
+  if [[ -n "$outside" && -s "$rd/$name.scope" && ! -f "$rd/$name.concurrent" ]]; then outside_fail=1; fi
   if [[ -f "$rd/$name.red-exit" && "$(<"$rd/$name.red-exit")" == 0 ]]; then red_fail=1; fi
   if reply_done "$name" && (( rounds < 2 && (check_fail || outside_fail || bad || found || red_fail) )); then
     rounds=$((rounds + 1))
@@ -1109,6 +1138,7 @@ journal_ask() {
     --arg name "$name" --arg role "$(cat "$rd/$name.role" 2>/dev/null || echo unknown)" \
     --arg agent "$(agent_kind "$name")" --arg model "$(agent_model "$name")" \
     --argjson models "$(tried_models "$name" | jq -Rn '[inputs]')" \
+    --argjson fallback_errors "$(journal_lines "$rd/$name.tried-errors")" \
     --arg brief "${out%.md}.brief" --arg payload "$out" \
     --arg status "$(reply_text "$name" | grep -m1 -E 'STATUS' || true)" \
     --argjson autofix "$autofix" \
@@ -1124,6 +1154,7 @@ journal_ask() {
     --argjson concurrent "$(journal_lines "$rd/$name.concurrent")" \
     --arg ctx "$(agent_ctx "$name")" \
     '{event: "ask", ts: $ts, project: $project, name: $name, role: $role, agent: $agent, model: $model, models: $models,
+      fallback_errors: $fallback_errors,
       status: $status, autofix: $autofix, head: $head, base: $base, check: $check, check_exit: $check_exit, scope: $scope, changed: $changed, outside_scope: $outside, concurrent: $concurrent,
       ctx: $ctx, brief: $brief, payload: $payload, claims: $claims, red_exit: $red_exit}' >> "$JOURNAL"
 }
@@ -1218,11 +1249,13 @@ cmd_resume() {
     resume_zcode "$name" "$@"
     return
   fi
-  local rd session slot saved=() saved_fallback=""
+  local rd session slot saved=() saved_fallback="" body
   rd="$(run_dir)"
   session="$(cat "$rd/$name.session" 2>/dev/null || true)"
   [[ -f "$session" && -f "$rd/$name.role" ]] || die "no stopped session for $name"
   slot="$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")"
+  body="$(config_json "$(config_path)")"
+  slot_known "$body" "$slot" || slot="$(cat "$rd/$name.role")"
   [[ -f "$rd/$name.fallback" ]] && saved_fallback="$(<"$rd/$name.fallback")"
   [[ -f "$rd/$name.cwd" ]] && saved+=(--cwd "$(<"$rd/$name.cwd")")
   [[ -f "$rd/$name.model" ]] && saved+=(--model "$(<"$rd/$name.model")")

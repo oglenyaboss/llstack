@@ -648,6 +648,44 @@ EOF
   assert_eq 'pi' "$(cat "$agent_file")" ".agent after the switch"
 }
 
+case_fallback_zcode_log() {
+  zcode_setup
+  hd_config '{"default":{"harness":"zcode","model":"local/base"},"slots":{"worker":{"fallback":[{"model":"local/vendor/model"}]}}}'
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "zcode spawn"
+  write_on_enter <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+pane="$1"
+source "$HD_TEST_LIB"
+state="$(zcode_state_dir w1)"
+count="$(cat "$FAKE_DIR/on-enter-count" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_DIR/on-enter-count"
+mkdir -p "$state/log"
+jq -nc --arg s "sess-l$count" --arg t "turn-l$count" --arg p "$(<"$state/line")" \
+  '{hookEventName:"UserPromptSubmit",sessionId:$s,turnId:$t,prompt:$p}' >> "$state/events.jsonl"
+if (( count < 3 )); then
+  jq -nc --arg s "sess-l$count" --arg t "turn-l$count" \
+    '{level:"error",event:"turn.failed",module:"core.runtime",status:"failed",sessionId:$s,turnId:$t,message:"Turn failed",error:{name:"Error",message:"first model down"}}' >> "$state/log/zcode-test.jsonl"
+else
+  jq -nc --arg s "sess-l$count" --arg t "turn-l$count" --arg text $'switched\nSTATUS: done' \
+    '{hookEventName:"Stop",sessionId:$s,turnId:$t,responseText:$text,responsePreview:"switched"}' >> "$state/events.jsonl"
+  jq -nc --arg s "sess-l$count" --arg t "turn-l$count" \
+    '{level:"info",event:"turn.completed",module:"core.runtime",status:"completed",sessionId:$s,turnId:$t}' >> "$state/log/zcode-test.jsonl"
+fi
+herdr pane report-agent --source llstack:zcode --agent zcode --state working "$pane" >/dev/null 2>&1 || true
+SCRIPT
+  hd_run ask w1 'Fail twice, then switch.' --timeout 3000
+  assert_eq 0 "$HD_RC" "fallback ask exit"
+  local rundir; rundir="$(dirname "$(zstate w1)")"
+  assert_contains "$HD_OUT" "--- fallback: local/base → local/vendor/model:" "fallback line"
+  assert_contains "$HD_OUT" "$rundir/w1.zcode-log-1" "fallback line names the moved log"
+  assert_exists "$rundir/w1.zcode-log-1" "moved zcode log"
+  assert_file_contains "$rundir/w1.zcode-log-1/zcode-test.jsonl" "sess-l1" "first model log"
+  assert_contains "$HD_OUT" 'STATUS: done' "replacement envelope"
+}
+
 case_cancelled() {
   zcode_setup
   hd_run spawn w1 worker
@@ -1183,6 +1221,7 @@ run_case zcode_wait_no_reply case_wait_no_reply
 run_case zcode_provider_retry case_provider_retry
 run_case zcode_provider_failure_twice case_provider_failure_twice
 run_case zcode_fallback_to_pi case_fallback_to_pi
+run_case zcode_fallback_zcode_log case_fallback_zcode_log
 run_case zcode_cancelled case_cancelled
 run_case zcode_stop_resume case_stop_resume
 run_case zcode_resume_after_tui_exit case_resume_after_tui_exit

@@ -32,7 +32,7 @@ A relative `--config` is read from the project root. Unknown arguments fail rath
 
 ## Review
 
-Medium gets one reviewer. High gets two from different model families, plus the strong reviewer when the change spans several services. The second family pays off as the second reviewer of a pair and only when that model is strong: a weak model from another family finds no more than a fresh session of the first. Give each reviewer [references/review-brief.md](references/review-brief.md), filled in, and run it with whatever your client offers: a subagent, another agent CLI, or `herdr-delegate` scouts. Open 1–3 cited `file:line` per reviewer before trusting its findings, then merge them into one row per root cause: finding, severity, who found it, verified.
+Medium gets one reviewer. High gets two from different model families, plus the strong reviewer when the change spans several services. The second family pays off as the second reviewer of a pair and only when that model is strong: a weak model from another family finds no more than a fresh session of the first. Give each reviewer [references/review-brief.md](references/review-brief.md), filled in, and run it with whatever your client offers: a subagent, another agent CLI, or `herdr-delegate` reviewers (`hd spawn <name> reviewer`). Open 1–3 cited `file:line` per reviewer before trusting its findings, then merge them into one row per root cause: finding, severity, who found it, verified.
 
 ## Act on the tier
 

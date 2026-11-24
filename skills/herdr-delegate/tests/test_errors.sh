@@ -114,6 +114,7 @@ case_fallback_switch() {
   assert_file_contains "$dir/last-prompt" "OUTPUT_FILE:" "resent output file"
   assert_file_contains "$dir/last-prompt" "A previous attempt at this brief ended on a provider error" "resent warning"
   assert_eq 3 "$(prompt_calls)" "prompt count"
+  assert_eq 0 "$(find "$(dirname "$(run_file w1.out)")" -maxdepth 1 -name 'w1.zcode-log-*' | wc -l | tr -d ' ')" "zcode logs after a pi fallback"
 }
 
 case_fallback_ls_and_journal() {
@@ -128,6 +129,88 @@ case_fallback_ls_and_journal() {
   local entry
   entry="$(tail -n 1 "$XDG_CACHE_HOME/herdr-delegate/journal.jsonl")"
   assert_jq '.models == ["prov/m1","prov/m2"]' "$entry" "journal models"
+  assert_jq '.fallback_errors == ["overloaded"]' "$entry" "journal fallback_errors"
+}
+
+case_fallback_dispatch_error() {
+  fallback_spawn
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if (( $3 < 3 )); then
+  turn "$2" "partial" error overloaded
+else
+  printf 'provider refused the request\n' >&2
+  exit 2
+fi
+EOF
+  hd_run ask w1 'Do the work.'
+  [[ "$HD_RC" != 0 ]] || t_fail "hd ask exit: expected non-zero, got 0"
+  assert_not_contains "$HD_OUT" "STATUS: still_working"
+  assert_contains "$HD_OUT" "provider refused the request" "dispatch output"
+  assert_eq 3 "$(prompt_calls)" "prompt count"
+}
+
+case_journal_without_fallback_errors() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "did it
+STATUS: done"
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
+  assert_exists "$journal" "journal"
+  assert_jq '.fallback_errors == []' "$(tail -n 1 "$journal")" "journal fallback_errors without a fallback"
+}
+
+case_fallback_errors_per_switch() {
+  printf 'prov m1\nprov m2\nprov m3\n' > "$FAKE_DIR/pi-models"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"worker":{"fallback":[{"model":"prov/m2"},{"model":"prov/m3"}]}}}'
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "hd spawn w1"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if (( $3 < 5 )); then
+  turn "$2" "partial" error overloaded
+else
+  turn "$2" "fixed
+STATUS: done"
+fi
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "hd ask exit"
+  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
+  assert_jq '.fallback_errors == ["overloaded","overloaded"]' "$(tail -n 1 "$journal")" "journal fallback_errors per switch"
+}
+
+case_fallback_slot_role_changed() {
+  printf 'prov m1\nprov m2\n' > "$FAKE_DIR/pi-models"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"custom":{"role":"worker","model":"prov/m1","fallback":[{"model":"prov/m2"}]}}}'
+  hd_run spawn w1 custom
+  assert_eq 0 "$HD_RC" "hd spawn w1 custom"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+if (( $3 == 2 )); then
+  printf '%s\n' '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"custom":{"role":"reviewer","model":"prov/m1","fallback":[{"model":"prov/m2"}]}}}' > "$HD_CONFIG"
+fi
+turn "$2" "partial" error overloaded
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "hd ask exit"
+  assert_contains "$HD_OUT" "STATUS: provider_error"
+  assert_contains "$HD_OUT" "fallback skipped: slot custom"
+  assert_eq 0 "$(grep -c $'^pane\tclose' "$FAKE_DIR/calls.log" || true)" "pane close calls"
+  assert_eq worker "$(cat "$(run_file w1.role)")" ".role"
+  assert_file_contains "$(run_file w1.fallback)" "prov/m2" ".fallback"
 }
 
 case_fallback_chain_exhausted() {
@@ -223,6 +306,10 @@ run_case errors_provider_error_retry case_provider_error_retry
 run_case errors_provider_error_twice case_provider_error_twice
 run_case errors_fallback_switch case_fallback_switch
 run_case errors_fallback_ls_and_journal case_fallback_ls_and_journal
+run_case errors_fallback_dispatch_error case_fallback_dispatch_error
+run_case errors_journal_without_fallback_errors case_journal_without_fallback_errors
+run_case errors_fallback_errors_per_switch case_fallback_errors_per_switch
+run_case errors_fallback_slot_role_changed case_fallback_slot_role_changed
 run_case errors_fallback_chain_exhausted case_fallback_chain_exhausted
 run_case errors_fallback_absent_exhausted case_fallback_absent_exhausted
 run_case errors_fallback_resume case_fallback_resume
