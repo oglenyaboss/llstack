@@ -128,7 +128,7 @@ zcode_resolved_thinking() {
 
 zcode_disallowed() {
   case "$1" in
-    scout|reviewer) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode Edit ApplyPatch' ;;
+    scout|reviewer) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode ApplyPatch' ;;
     researcher) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode Bash Edit ApplyPatch' ;;
     *) echo 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode' ;;
   esac
@@ -540,4 +540,16 @@ zcode_screen_tail() {
   else
     printf 'SCREEN TAIL\n'
   fi
+}
+
+zcode_ctx() {
+  local db k
+  db="$(zcode_dir "$1")/db/db.sqlite"
+  [[ -f "$db" ]] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  k="$(sqlite3 -init /dev/null -batch -noheader -list -readonly "$db" \
+    "SELECT input_tokens / 1000 FROM model_usage WHERE input_tokens > 0 ORDER BY started_at DESC, rowid DESC LIMIT 1;" \
+    2>/dev/null || true)"
+  [[ "$k" =~ ^[0-9]+$ ]] || return 0
+  printf '%s\n' "${k}k"
 }

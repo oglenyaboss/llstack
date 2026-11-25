@@ -195,8 +195,9 @@ codex_session() {
 }
 
 agent_ctx() {
-  local session; session="$(agent_session "$1")"
-  [[ "$(agent_kind "$1")" == zcode ]] && return 0
+  local session
+  if [[ "$(agent_kind "$1")" == zcode ]]; then zcode_ctx "$1"; return 0; fi
+  session="$(agent_session "$1")"
   [[ -f "$session" ]] || return 0
   if [[ "$(agent_kind "$1")" == codex ]]; then
     jq -rs '[.[] | select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.last_token_usage | select(.)]
@@ -773,6 +774,7 @@ settle_ask() {
   local check_block scope_block claims_block concurrent_block red_block red_files rounds=0 check_rc="" outside=""
   local check_fail=0 outside_fail=0 red_fail=0 red_rc=0 reason="" msg scope_files
   local cited=0 bad=0 absent=0 found=0 claims=null claims_reason= details=()
+  local claims_autofix=1 claims_fail=0 missing_files=0 detail_line
   check_block="$(run_check "$name")"
   scope_block="$(run_scope "$name")"
   concurrent_block="$(run_concurrent "$name")"
@@ -799,7 +801,14 @@ settle_ask() {
   if [[ -n "$check_rc" && "$check_rc" != 0 ]]; then check_fail=1; fi
   if [[ -n "$outside" && -s "$rd/$name.scope" && ! -f "$rd/$name.concurrent" ]]; then outside_fail=1; fi
   if [[ -f "$rd/$name.red-exit" && "$(<"$rd/$name.red-exit")" == 0 ]]; then red_fail=1; fi
-  if reply_done "$name" && (( rounds < 2 && (check_fail || outside_fail || bad || found || red_fail) )); then
+  if (( bad >= 20 && found == 0 )); then
+    for detail_line in "${details[@]:0:bad}"; do
+      if [[ "$detail_line" == *": no such file" ]]; then missing_files=$((missing_files + 1)); fi
+    done
+    if (( missing_files * 2 >= bad )); then claims_autofix=0; fi
+  fi
+  if (( (bad && claims_autofix) || found )); then claims_fail=1; fi
+  if reply_done "$name" && (( rounds < 2 && (check_fail || outside_fail || claims_fail || red_fail) )); then
     rounds=$((rounds + 1))
     printf '%s\n' "$rounds" > "$rd/$name.autofix"
     if (( check_fail )); then reason="check exit=$check_rc"; fi
@@ -807,9 +816,9 @@ settle_ask() {
       if [[ -n "$reason" ]]; then reason+="; "; fi
       reason+="outside Scope: ${outside//$'\n'/ }"
     fi
-    if (( bad || found )); then
-      if (( bad )); then claims_reason="$bad not found"; fi
-      if (( bad && found )); then claims_reason+=", "; fi
+    if (( claims_fail )); then
+      if (( bad && claims_autofix )); then claims_reason="$bad not found"; fi
+      if (( bad && claims_autofix && found )); then claims_reason+=", "; fi
       if (( found )); then claims_reason+="$found absent found"; fi
       reason+="${reason:+; }claims: $claims_reason"
     fi
@@ -826,15 +835,18 @@ settle_ask() {
       scope_files="$(paste -sd' ' "$rd/$name.scope")"
       msg+=$'\n'"Files changed outside Scope: ${outside//$'\n'/ }. Scope: $scope_files. Revert those files; if the brief requires them, say so under QUESTION."
     fi
-    if (( bad )); then
+    if (( bad && claims_autofix )); then
+      local bad_cap=$(( bad < 20 ? bad : 20 ))
       msg+=$'\n'"These citations in OUTPUT_FILE do not match the file:"
-      msg+=$'\n'"$(printf '%s\n' "${details[@]:0:bad}")"
+      msg+=$'\n'"$(printf '%s\n' "${details[@]:0:bad_cap}")"
+      if (( bad > 20 )); then msg+=$'\n'"  ...and $((bad - 20)) more not shown"; fi
     fi
     if (( found )); then
       msg+=$'\n'"These ABSENT strings occur in the repository:"
-      msg+=$'\n'"$(printf '%s\n' "${details[@]:bad}")"
+      msg+=$'\n'"$(printf '%s\n' "${details[@]:bad:20}")"
+      if (( found > 20 )); then msg+=$'\n'"  ...and $((found - 20)) more not shown"; fi
     fi
-    if (( bad || found )); then
+    if (( claims_fail )); then
       msg+=$'\n'"Correct each line number or quote, or drop the claim. For an ABSENT string that occurs, replace the ABSENT line with the occurrences and why each does not count."
     fi
     if (( red_fail )); then
@@ -860,6 +872,9 @@ settle_ask() {
     fi
     finish "$name" "$timeout"
     return
+  fi
+  if reply_done "$name" && (( !claims_autofix && !check_fail && !outside_fail && !found && !red_fail )); then
+    echo "--- autofix skipped: claims: ${missing_files}/${bad} citations have no such file (likely wrong ref, path prefix, or cwd)"
   fi
   print_result "$name"
   if [[ -n "$check_block" ]]; then printf '%s\n' "$check_block"; fi
@@ -894,7 +909,10 @@ run_scope() {
   mapfile -t changed < <(git -C "$cwd" -c core.quotePath=false diff --no-renames --name-only "$base" "$(snapshot_tree "$cwd")")
   printf '%s\n' "${changed[@]}" | sed '/^$/d' > "$rd/$name.changed"
   if [[ ! -s "$rd/$name.scope" ]]; then
-    [[ "$role" == reviewer && ${#changed[@]} -gt 0 ]] || return 0
+    case "$role" in
+      reviewer|scout) (( ${#changed[@]} > 0 )) || return 0 ;;
+      *) return 0 ;;
+    esac
   fi
   mapfile -t scope < "$rd/$name.scope"
   for f in "${changed[@]}"; do
@@ -1052,7 +1070,7 @@ claim_matches() {
 }
 
 run_claims() {
-  local name="$1" rd out cwd in_git line rest cite path start end quote normalized window reason string
+  local name="$1" rd out cwd in_git line rest cite path raw_path ref git_path start end quote normalized window reason string
   local cited=0 bad=0 absent=0 found=0 bad_lines=() found_lines=() preview=() matches=() match i
   local token='`([^`]*)`' location='^(.+):([0-9]+)((-|–)([0-9]+))?$'
   local quoted='^[[:space:]]*(—|–|-|:|·)[[:space:]]*`([^`]*)`'
@@ -1080,9 +1098,23 @@ run_claims() {
       rest="${rest#"${BASH_REMATCH[0]}"}"
       [[ "$quote" =~ $lineref ]] && continue
       cited=$((cited + 1))
+      raw_path="$path"
       [[ "$path" == /* ]] || path="$cwd/$path"
       if [[ ! -f "$path" ]]; then
         reason="no such file"
+        if [[ "$in_git" == true && "$raw_path" == *:* ]]; then
+          ref="${raw_path%%:*}"
+          git_path="${raw_path#*:}"
+          git_path="${git_path#./}"
+          if [[ "$(git -C "$cwd" cat-file -t "${ref}:${git_path}" 2>/dev/null || true)" == blob ]]; then
+            normalized="$(sed -E "s/(\.\.\.|…)[[:space:]]*$//; $trim" <<<"$quote")"
+            window="$(git -C "$cwd" cat-file blob "${ref}:${git_path}" 2>/dev/null | awk -v start="$start" -v end="$end" '
+              NR >= start - 3 && NR <= end + 3 { printf "%s ", $0 }
+            ' | sed -E "$trim")" || window=""
+            [[ -n "$window" && "$window" == *"$normalized"* ]] && continue
+            reason="not within 3 lines"
+          fi
+        fi
       else
         normalized="$(sed -E "s/(\.\.\.|…)[[:space:]]*$//; $trim" <<<"$quote")"
         window="$(awk -v start="$start" -v end="$end" '

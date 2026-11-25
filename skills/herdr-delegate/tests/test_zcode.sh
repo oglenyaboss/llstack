@@ -1147,7 +1147,8 @@ case_roles() {
   state="$(zstate sc)"
   tools="$(cat "$state/disallowed")"
   assert_contains "$tools" 'Agent Task AskUserQuestion EnterPlanMode ExitPlanMode' "scout base tools"
-  assert_contains "$tools" 'Edit ApplyPatch' "scout edit tools"
+  assert_contains "$tools" 'ApplyPatch' "scout keeps ApplyPatch disallowed"
+  assert_not_contains "$tools" 'Edit' "scout may Edit"
   assert_not_contains "$tools" ' Bash ' "scout keeps Bash"
   hd_run spawn rs researcher
   assert_eq 0 "$HD_RC" "researcher spawn"
@@ -1164,8 +1165,74 @@ case_reviewer_role() {
   assert_eq 0 "$HD_RC" "reviewer spawn"
   state="$(zstate rv)"
   tools="$(cat "$state/disallowed")"
-  assert_contains "$tools" 'Edit ApplyPatch' "reviewer edit tools"
+  assert_contains "$tools" 'ApplyPatch' "reviewer keeps ApplyPatch disallowed"
+  assert_not_contains "$tools" 'Edit' "reviewer may Edit"
   assert_not_contains "$tools" ' Bash ' "reviewer keeps Bash"
+}
+
+case_ctx_model_usage() {
+  zcode_setup
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "zcode spawn"
+  local state db entry
+  state="$(zstate w1)"
+  db="$state/db/db.sqlite"
+  rm -f "$db"
+  sqlite3 "$db" 'CREATE TABLE model_usage (started_at INTEGER, input_tokens INTEGER);
+    INSERT INTO model_usage VALUES (100, 120000), (200, 408484), (300, 0);'
+
+  hd_run ls
+  assert_eq 0 "$HD_RC" "zcode ls"
+  assert_contains "$HD_OUT" 'ctx=408k' "ls ctx from model_usage"
+
+  write_on_enter <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+pane="$1"
+source "$HD_TEST_LIB"
+state="$(zcode_state_dir w1)"
+jq -nc --arg s sess-ctx --arg t turn-ctx --arg p "$(<"$state/line")" \
+  '{hookEventName:"UserPromptSubmit",sessionId:$s,turnId:$t,prompt:$p}' >> "$state/events.jsonl"
+jq -nc --arg s sess-ctx --arg t turn-ctx --arg text $'did it\nSTATUS: done' \
+  '{hookEventName:"Stop",sessionId:$s,turnId:$t,responseText:$text,responsePreview:"did it",stopHookActive:false,toolCallCount:1,cwd:"/tmp",mode:"yolo",timestamp:"2026-01-01T00:00:01Z"}' >> "$state/events.jsonl"
+mkdir -p "$state/log"
+jq -nc --arg s sess-ctx --arg t turn-ctx \
+  '{level:"info",event:"turn.completed",module:"core.runtime",status:"completed",sessionId:$s,turnId:$t}' >> "$state/log/zcode-test.jsonl"
+herdr pane report-agent --source llstack:zcode --agent zcode --state idle "$pane" >/dev/null 2>&1 || true
+SCRIPT
+
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "zcode ask"
+  assert_contains "$HD_OUT" 'ctx=408k' "ask ctx from model_usage"
+
+  hd_run result w1
+  assert_eq 0 "$HD_RC" "zcode result"
+  assert_contains "$HD_OUT" 'ctx=408k' "result ctx from model_usage"
+
+  entry="$(jq -c 'select(.event == "ask")' "$XDG_CACHE_HOME/herdr-delegate/journal.jsonl")"
+  assert_jq '.ctx == "408k"' "$entry" "journal ctx"
+}
+
+case_ctx_empty() {
+  zcode_setup
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "zcode spawn"
+  local state db before
+  state="$(zstate w1)"
+  db="$state/db/db.sqlite"
+  rm -f "$db"
+  sqlite3 "$db" 'CREATE TABLE model_usage (started_at INTEGER, input_tokens INTEGER);
+    INSERT INTO model_usage VALUES (300, 0);'
+  hd_run ls
+  assert_contains "$HD_OUT" 'ctx= model=' "ctx empty without positive rows"
+  assert_not_contains "$HD_OUT" 'ctx=0' "no invented ctx without positive rows"
+
+  before="$PATH"
+  export PATH="$(path_without sqlite3)"
+  hd_run ls
+  assert_contains "$HD_OUT" 'ctx= model=' "ctx empty without sqlite3"
+  assert_not_contains "$HD_OUT" 'ctx=0' "no invented ctx without sqlite3"
+  export PATH="$before"
 }
 
 case_ask_in_flight() {
@@ -1203,6 +1270,8 @@ run_case zcode_spawn_preserves_state case_spawn_preserves_state
 run_case zcode_model_selection case_model_selection
 run_case zcode_roles case_roles
 run_case zcode_reviewer_role case_reviewer_role
+run_case zcode_ctx_model_usage case_ctx_model_usage
+run_case zcode_ctx_empty case_ctx_empty
 run_case zcode_spawn_failure case_spawn_failure
 run_case zcode_preflight case_preflight
 run_case zcode_wait_stop_before_log case_wait_stop_before_log

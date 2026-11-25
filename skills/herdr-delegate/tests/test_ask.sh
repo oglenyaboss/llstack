@@ -112,6 +112,24 @@ EOF
   assert_not_contains "$HD_OUT" "--- scope"
 }
 
+case_scope_scout_without_scope() {
+  hd_run spawn w1 scout
+  assert_eq 0 "$HD_RC" "hd spawn w1"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+printf 'changed\n' >> src/a.txt
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask w1 'Read the change.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- scope: 1 changed, 1 outside Scope"
+  assert_contains "$HD_OUT" "src/a.txt"
+  assert_not_contains "$HD_OUT" "--- autofix"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
 case_scope_outside_file() {
   spawn_w1
   write_hook <<'EOF'
@@ -767,8 +785,129 @@ case_claims_line_ref_quote() {
   assert_eq 1 "$(prompt_calls)" "agent prompt calls"
 }
 
+commit_old_version() {
+  printf 'old1\nold2\nold3\n' > src/old.txt
+  git add src/old.txt
+  git -c user.name=test -c user.email=test@example.com commit -qm old
+  git -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m after
+  git tag old-tag HEAD~1
+}
+
+case_claims_git_ref() {
+  setup_claims
+  commit_old_version
+  rm src/old.txt
+  CLAIMS_FIRST='- `HEAD~1:src/old.txt:2` — `old2`' hd_run ask w1 'Read src/old.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found; 0 absent, 0 found in repo"
+  assert_not_contains "$HD_OUT" "--- autofix"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_git_tag_ref() {
+  setup_claims
+  commit_old_version
+  rm src/old.txt
+  CLAIMS_FIRST='- `old-tag:./src/old.txt:3` — `old3`' hd_run ask w1 'Read src/old.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found; 0 absent, 0 found in repo"
+  assert_not_contains "$HD_OUT" "--- autofix"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_git_ref_errors() {
+  setup_claims
+  commit_old_version
+  rm src/old.txt
+  CLAIMS_FIRST=$'- `HEAD~1:src/old.txt:2` — `l9`\n- `nosuchref:src/old.txt:1` — `old1`\n- `HEAD~1:src:1` — `x`' hd_run ask w1 'Read src/old.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 3 not found"
+  assert_contains "$HD_OUT" "--- claims: 3 cited, 3 not found; 0 absent, 0 found in repo"
+  assert_contains "$HD_OUT" 'HEAD~1:src/old.txt:2 `l9`: not within 3 lines'
+  assert_contains "$HD_OUT" 'nosuchref:src/old.txt:1 `old1`: no such file'
+  assert_contains "$HD_OUT" 'HEAD~1:src:1 `x`: no such file'
+  assert_eq 3 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_mass_missing_bailout() {
+  setup_claims
+  local lines="" i
+  for i in $(seq 1 20); do lines+="- \`src/m$i.txt:1\` — \`x\`"$'\n'; done
+  CLAIMS_FIRST="${lines%$'\n'}" hd_run ask w1 'Find the modules.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix skipped: claims: 20/20 citations have no such file (likely wrong ref, path prefix, or cwd)"
+  assert_not_contains "$HD_OUT" "--- autofix 1/2"
+  assert_contains "$HD_OUT" "--- claims: 20 cited, 20 not found"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_autofix_cap() {
+  setup_claims
+  local lines="" i prompt count
+  for i in $(seq 1 25); do lines+="- \`src/a.txt:1\` — \`l10\`"$'\n'; done
+  CLAIMS_FIRST="${lines%$'\n'}" hd_run ask w1 'Read src/a.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 25 not found"
+  prompt="$(<"$(single_agent_dir)/last-prompt")"
+  assert_contains "$prompt" "...and 5 more not shown" "autofix cap marker"
+  count="$(grep -c 'not within 3 lines' <<< "$prompt")"
+  assert_eq 20 "$count" "citation error lines in the autofix prompt"
+}
+
+case_claims_found_autofix_cap() {
+  setup_claims
+  local lines="" i prompt count
+  for i in $(seq 1 25); do printf 'needle%s\n' "$i"; done > src/strings.txt
+  git add src/strings.txt
+  for i in $(seq 1 25); do lines+="ABSENT: \`needle$i\`"$'\n'; done
+  CLAIMS_FIRST="${lines%$'\n'}" hd_run ask w1 'Find the needles.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- autofix 1/2: claims: 25 absent found"
+  prompt="$(<"$(single_agent_dir)/last-prompt")"
+  assert_contains "$prompt" "...and 5 more not shown" "found cap marker"
+  count="$(grep -c 'ABSENT `needle' <<< "$prompt")"
+  assert_eq 20 "$count" "found error lines in the autofix prompt"
+}
+
+case_claims_git_ref_large_blob() {
+  setup_claims
+  {
+    printf 'first\nlarge-target-line\n'
+    awk 'BEGIN { for (i = 0; i < 4000; i++) printf "padding-line-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n", i }'
+  } > src/big.txt
+  git add src/big.txt
+  git -c user.name=test -c user.email=test@example.com commit -qm big
+  git -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m after
+  rm src/big.txt
+  CLAIMS_FIRST='- `HEAD~1:src/big.txt:2` — `large-target-line`' hd_run ask w1 'Read src/big.txt.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  assert_contains "$HD_OUT" "--- claims: 1 cited, 0 not found; 0 absent, 0 found in repo"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls"
+}
+
+case_claims_bad_and_found_no_leak() {
+  setup_claims
+  printf 'foundNeedle\n' > src/needle.txt
+  git add src/needle.txt
+  CLAIMS_FIRST=$'- `src/a.txt:1` — `l10`\nABSENT: `foundNeedle`' hd_run ask w1 'Check both.'
+  assert_eq 0 "$HD_RC" "hd ask"
+  local prompt bad_section
+  prompt="$(<"$(single_agent_dir)/last-prompt")"
+  bad_section="$(awk '/These citations in OUTPUT_FILE/{flag=1;next}/These ABSENT strings/{flag=0}flag' <<< "$prompt")"
+  assert_contains "$bad_section" "src/a.txt:1" "bad section has citation"
+  assert_not_contains "$bad_section" "ABSENT" "bad section does not leak found lines"
+}
+
 run_case ask_claims_multiline_quote case_claims_multiline_quote
 run_case ask_claims_line_ref_quote case_claims_line_ref_quote
+run_case ask_claims_git_ref case_claims_git_ref
+run_case ask_claims_git_tag_ref case_claims_git_tag_ref
+run_case ask_claims_git_ref_errors case_claims_git_ref_errors
+run_case ask_claims_git_ref_large_blob case_claims_git_ref_large_blob
+run_case ask_claims_bad_and_found_no_leak case_claims_bad_and_found_no_leak
+run_case ask_claims_mass_missing_bailout case_claims_mass_missing_bailout
+run_case ask_claims_autofix_cap case_claims_autofix_cap
+run_case ask_claims_found_autofix_cap case_claims_found_autofix_cap
 run_case ask_claims_c1 case_claims_c1
 run_case ask_claims_c2 case_claims_c2
 run_case ask_claims_c3 case_claims_c3
@@ -782,6 +921,7 @@ run_case ask_claims_reviewer_absent case_claims_reviewer_absent
 run_case ask_scope_reviewer_without_scope case_scope_reviewer_without_scope
 run_case ask_autofix_scope_reviewer case_autofix_scope_reviewer
 run_case ask_scope_worker_without_scope case_scope_worker_without_scope
+run_case ask_scope_scout_without_scope case_scope_scout_without_scope
 write_red_hook() {
   write_hook <<'EOF'
 #!/usr/bin/env bash
