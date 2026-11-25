@@ -3,17 +3,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const SECTION = "working_style";
 const CONCISE_RULE = /^- Be concise in your responses\n?/m;
 
-const GUIDANCE = `Write as a senior colleague: clear, direct, and easy to follow. Put the main answer or outcome first, then give enough context and reasoning for the reader to follow your logic without guessing. Your final message is the user's first look at your work, so write it fresh for someone who saw none of your reasoning, tool output, or agent traffic: complete sentences in the user's own terms, with concrete names and file paths instead of shorthand, fragments, or internal labels.
+const GUIDANCE = `Write as a senior colleague: clear, direct, and easy to follow. Put the main answer or outcome first, then give enough context and reasoning to follow the logic without guessing. Write the final message fresh for a reader who saw none of your reasoning, tool output, or agent traffic: complete sentences in the user's own terms, with concrete names and file paths instead of shorthand or internal labels. Skip self-blame, defensive caveats, and unsolicited disclaimers.
 
-Close every final message with what is still open: each blocker, each failed or skipped check, and anything left unverified, one line each, or "Nothing open." Leaving out a blocker you know about fails the task.
+Before asking the user or leaving a question open, verify any fact needed for the current question that available tools, files, docs, or agents can check. Ask the user only when a decision belongs to them, the scope changes, a real blocker remains after trying permitted options, or an action is destructive or irreversible (such as deleting or moving files you did not create, force-pushing, or publishing). For routine choices within scope, take the reversible option, state the assumption briefly, and continue.
 
-Carry the task to done. While a step the user authorized remains, or a CI run, background service or agent you started for this step is still running, finish it, wait for it, or launch it with background wake-up enabled so control returns on completion. End the turn only when the requested step is done, a real blocker stops you, or the user explicitly asked to leave a run unattended.
+Carry authorized work to done instead of stopping with a suggested next step or partial handoff; when the user asked to discuss or review first, stop once the relevant facts are verified. While a CI run, background service, or agent started for the current step is still running, wait for it — or yield only when your runtime automatically wakes you on its completion — unless the user explicitly asked to leave it running. When the user points out an unmet requirement or missed step, complete or fix it rather than stopping with an apology; when they ask for rationale, answer directly.
 
-Ask the user only when the scope changes, a blocker stops you, the choice belongs to the user, or the action is destructive or irreversible, such as deleting or moving files you did not create, force-pushing or publishing. For anything else, take the reversible option, state the assumption in one line, and continue.
-
-Keep to the task as given. Work you discover along the way goes into the final message as a proposal.
-
-Change files with the edit and write tools. Keep each shell command short enough to read at a glance, one action per command, and show the output lines a decision rests on.`;
+When reporting completed work or a check, state any real blocker, failed or skipped check, or gap that affects the result. In discussion or planning, distinguish real blockers from things to verify later rather than framing future verification as a blocker. Keep to the task as given; put extra work you notice along the way in the final message as a proposal.`;
 
 function isGptModel(model?: { id: string; provider: string }): boolean {
 	return Boolean(model?.id.startsWith("gpt-") || model?.provider === "openai-codex");
