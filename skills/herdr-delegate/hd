@@ -530,7 +530,7 @@ ask_message() {
 cmd_ask() {
   local name="${1:-}" brief="${2:-}"; shift 2 || usage
   [[ -n "$name" && -n "$brief" ]] || usage
-  local timeout=3000000
+  local timeout=600000
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;
@@ -1192,7 +1192,7 @@ cmd_note() {
 
 cmd_wait() {
   local name="${1:-}"; shift || usage
-  local timeout=3000000
+  local timeout=600000
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;

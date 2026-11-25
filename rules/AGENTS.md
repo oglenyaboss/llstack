@@ -49,13 +49,13 @@ These rules are global. More specific project instructions and the user's curren
 
 ## Git and safety
 
-- Push, merge, open a PR or publish only when the user asks for that exact action. Permission does not carry over to the next operation.
+- Push, merge, open a PR or publish only when the user asks. When the user names an end state ("merge to develop", "push, PR and release", "finish up to X"), every technical step up to that point is authorized; stop only for an unnamed production target, irreversible deletion or a real blocker.
 - Stage files by name; `git add -A` is off limits.
 - Before a destructive action, pin down its exact target and get confirmation unless the user explicitly assigned it.
-- Keep secrets, tokens and personal data out of output, logs and the files you create.
+- Keep secrets, tokens and personal data out of output, logs and the files you create. When the user supplies a temporary session token (such as `BW_SESSION`) for the current task, use it without printing it to chat or logs, leave the vault state alone, and remind the user at the end to lock or rotate it.
 - Stop processes by exact PID or port, never with a broad `pkill -f`.
 
 ## Tools
 
 - Start subagents fresh and put all the context they need in the message.
-- Inside Herdr (`HERDR_ENV=1`), lead coding tasks with the `herdr-delegate` skill without waiting to be asked.
+- Inside Herdr (`HERDR_ENV=1`), lead nontrivial coding tasks with the `herdr-delegate` skill without waiting to be asked; make small obvious edits (a few lines in one file) directly.

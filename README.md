@@ -12,7 +12,7 @@ Only step 3 needs Herdr. The rest works in Claude Code, Codex or pi as is.
 
 A worker saying "done", a merged PR, a deploy and the owner's acceptance are four separate events. Only the last one closes an issue.
 
-Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing solution before writing code, change only what the task needs, prove the result, ask before anything irreversible) and [github-projects-api](skills/github-projects-api/SKILL.md), GitHub Projects v2 through `gh` with the API limits I ran into. [astra-guidance](pi/extensions/astra-guidance.ts) is a pi extension that adds working-style rules to the system prompt when the model is GPT-6.2 Astra: a final answer written for a person, open blockers listed, questions only where the user decides. Link it into `~/.pi/agent/extensions/`.
+Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing solution before writing code, change only what the task needs, prove the result, ask before anything irreversible) and [github-projects-api](skills/github-projects-api/SKILL.md), GitHub Projects v2 through `gh` with the API limits I ran into. [astra-guidance](pi/extensions/astra-guidance.ts) is a pi extension that adds working-style rules to the system prompt for OpenAI/GPT models: a final answer written for a person, open blockers listed, questions only where the user decides. Link it into `~/.pi/agent/extensions/`.
 
 ## From my journal
 
