@@ -528,6 +528,68 @@ ask_message() {
   printf '%s\n\n---\nOUTPUT_FILE: %s\nWrite the payload your role defines to OUTPUT_FILE. End your turn with the report envelope from your role instructions.\n' "$1" "$2"
 }
 
+validate_worker_brief() {
+  local brief="$1" report
+  [[ "$role" == worker && "$seq" -eq 1 ]] || return 0
+  if [[ "$brief_from_file" != 1 ]] && ! grep -qE '^(Goal|Requirements|Acceptance):' <<<"$brief"; then
+    return 0
+  fi
+  if grep -qE '^Brief:[[:space:]]*raw([[:space:]]|$)' <<<"$brief"; then
+    return 0
+  fi
+  report="$(awk '
+    BEGIN {
+      nw = split("Goal Context Decisions Requirements Acceptance Scope Check", want, " ")
+      for (i = 1; i <= nw; i++) required[want[i]] = 1
+    }
+    {
+      line = $0
+      if (line ~ /^(Goal|Context|Decisions|Requirements|Removes|Traps|Acceptance|Scope|Done when|Check|Red|Brief):/) {
+        sect = line
+        sub(/:.*/, "", sect)
+        if (sect in required) seen[sect] = 1
+        in_acc = (sect == "Acceptance")
+        in_req = (sect == "Requirements")
+        if (sect == "Scope" && !scope_seen) {
+          scope_seen = 1
+          if (line !~ /`[^`]+`/) scope_bad = 1
+        }
+        if (in_req) count_req(line)
+        if (in_acc) count_case(line)
+        next
+      }
+      if (in_req) count_req(line)
+      if (in_acc) count_case(line)
+    }
+    function count_case(line,    l) {
+      l = tolower(line)
+      gsub(/red[[:space:]]*→[[:space:]]*green/, "", l)
+      gsub(/red[[:space:]]*->[[:space:]]*green/, "", l)
+      if (l ~ /→/ || l ~ /->/) acc_cases++
+    }
+    function count_req(line,    n, parts, i) {
+      n = split(line, parts, /[^A-Za-z0-9_]/)
+      for (i = 1; i <= n; i++)
+        if (parts[i] ~ /^R[0-9]+$/)
+          if (!(parts[i] in reqs)) { reqs[parts[i]] = 1; req_count++ }
+    }
+    END {
+      missing = ""
+      for (i = 1; i <= nw; i++)
+        if (!(want[i] in seen)) missing = missing (missing == "" ? "" : ", ") want[i]
+      if (missing != "")
+        printf "- missing section(s) on their own line: %s\n", missing
+      if (scope_bad)
+        print "- Scope needs at least one backticked path on the Scope: line"
+      needed = (req_count >= 1 ? req_count : 1)
+      if (acc_cases < needed)
+        printf "- Acceptance needs at least %d \"input → expected\" case line(s) (one per line), found %d\n", needed, acc_cases
+    }
+  ' <<<"$brief")"
+  [[ -n "$report" ]] || return 0
+  die "$report"$'\n'"Fix the brief per skills/brief/SKILL.md (or add \"Brief: raw\" for non-code tasks)."
+}
+
 cmd_ask() {
   local name="${1:-}" brief="${2:-}"; shift 2 || usage
   [[ -n "$name" && -n "$brief" ]] || usage
@@ -538,8 +600,10 @@ cmd_ask() {
       *) usage ;;
     esac
   done
+  local brief_from_file=0
   if [[ "$brief" == @* ]]; then
     brief="$(cat "${brief#@}")"
+    brief_from_file=1
   fi
   local check red_field
   check="$(sed -n '/^Check:/{s/^Check:[[:space:]]*//;s/^`\([^`]*\)`.*/\1/;s/[[:space:]]*$//;p;q;}' <<<"$brief")"
@@ -577,6 +641,7 @@ cmd_ask() {
   fi
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
+  validate_worker_brief "$brief"
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"

@@ -13,23 +13,31 @@ Write the brief to a file. Give the executor something to copy:
 
 ```
 Goal: one sentence, the observable result.
-Context: pointers: `path:line-range` for every fact that lives in a file, a pattern to copy
-         ("as in foo.ts:40-60"), payload paths to read first; exact names of new functions and files.
-Decisions: D1..Dn, what you chose where the files leave a choice open.
-Requirements: R1..Rn, one observable behavior each; every item of the issue or spec is here.
+Context:
+- pointers: `path:line-range` for every fact that lives in a file, a pattern to copy
+  ("as in `foo.ts:40-60`"), payload paths to read first, exact names of new functions and files
+- any existing test the change breaks, named here
+Decisions:
+- D1: what you chose where the files leave a choice open
+- D2: ...
+Requirements:
+- R1: one observable behavior
+- R2: ...
 Removes: what the change takes away or replaces (a screen, a key, a route, a flag, a fallback), each with
          an Acceptance case proving it is gone; "nothing" when nothing goes.
-Traps: where a plausible implementation goes wrong, with the correct shape: the check and
-       the write it guards in one transaction (`SELECT … FOR UPDATE`), a second concurrent
-       caller, the first/last/empty index, a repeat of the same request.
-Acceptance: the seam under test (public function, endpoint, component) and cases at it, "input → expected",
-       at least one per R and per trap; expected values are literals from the spec. The executor works
-       case by case: write the test, see it red, implement until green, next case.
-Scope: the files allowed to change, each in backticks, from the repo root: `src/a.ts` `src/auth/` `tests/*.test.ts`.
-       Everything else stays as is, including dependencies and existing tests.
+Traps:
+- where a plausible implementation goes wrong, with the correct shape: the check and the write it guards
+  in one transaction (`SELECT … FOR UPDATE`), a second concurrent caller, the first/last/empty index
+Acceptance:
+- Seam: the seam under test (public function, endpoint, component)
+- R1: <concrete input> → <exact expected literal>
+- Trap: <edge input> → <exact expected result>
+Scope: `src/a.ts` `src/auth/` `tests/*.test.ts`
 Done when: exact command and expected output ("pnpm test slug → 13 passed"); the report shows each case red, then green.
 Check: `one shell command` proving Done when.
 ```
+
+A brief is an executable spec, not a summary: every Decision, Requirement, Trap, and Acceptance case gets its own line with concrete literals (UI strings, keys, status codes, payloads), never shorthand such as "tests for R1–Rn", and an existing test that blocks the change is named explicitly in `Context`, `Decisions`, and `Scope`. `Scope` stays one line of specific repo-relative paths in backticks, because `hd` reads that line; a directory only when the task owns the whole directory.
 
 Done when an executor with zero context could carry out the brief without guessing.
 
