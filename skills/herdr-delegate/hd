@@ -152,6 +152,7 @@ role_tools() {
 }
 
 agent_json() { herdr agent get "$(agent_target "$1")"; }
+agent_alive() { agent_json "$1" >/dev/null 2>&1; }
 agent_status() { agent_json "$1" | jq -r .result.agent.agent_status; }
 agent_kind() { cat "$(run_dir)/$1.agent" 2>/dev/null || echo pi; }
 agent_model() { cat "$(run_dir)/$1.model" 2>/dev/null || echo "$(agent_kind "$1") default"; }
@@ -709,6 +710,7 @@ cmd_ask() {
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
   validate_worker_brief "$brief" "$check"
+  check_tree_exclusivity "$name" "$role"
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
@@ -748,6 +750,7 @@ cmd_ask() {
       exit 0
     fi
     echo "$res" >&2
+    if [[ -f "$rd/$name.ask-start" && ! -f "$rd/$name.ask-end" ]]; then date +%s > "$rd/$name.ask-end"; fi
     exit "$rc"
   fi
   if [[ "$(agent_kind "$name")" == zcode && "$res" == timeout ]]; then
@@ -1280,6 +1283,30 @@ run_claims() {
 
 tree_root() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || echo "$1"; }
 
+check_tree_exclusivity() {
+  local name="$1" role="$2" rd root f other other_role joined=""
+  local -a blockers=()
+  rd="$(run_dir)"
+  root="$(tree_root "$(agent_cwd "$name")")"
+  for f in "$rd"/*.ask-start; do
+    [[ -e "$f" ]] || continue
+    other="$(basename "$f" .ask-start)"
+    [[ "$other" != "$name" && ! -f "$rd/$other.ask-end" ]] || continue
+    [[ "$(tree_root "$(agent_cwd "$other")")" == "$root" ]] || continue
+    agent_alive "$other" || continue
+    other_role="$(cat "$rd/$other.role" 2>/dev/null || echo unknown)"
+    if [[ "$role" == worker || "$other_role" == worker ]]; then
+      blockers+=("$other ($other_role)")
+    fi
+  done
+  (( ${#blockers[@]} )) || return 0
+  for other in "${blockers[@]}"; do joined+="${joined:+, }$other"; done
+  if [[ "$role" == worker ]]; then
+    die "cannot ask worker $name: active ask in $root ($joined); wait for it to finish, or run $name in its own git worktree (--cwd)"
+  fi
+  die "cannot ask $role $name: active worker in $root ($joined); wait for it to finish, or run the worker in its own git worktree (--cwd)"
+}
+
 run_concurrent() {
   local name="$1" rd root start f other others=()
   rd="$(run_dir)"
@@ -1290,6 +1317,7 @@ run_concurrent() {
     [[ -e "$f" ]] || continue
     other="$(basename "$f" .ask-start)"
     [[ "$other" != "$name" && "$(tree_root "$(agent_cwd "$other")")" == "$root" ]] || continue
+    [[ -f "$rd/$other.ask-end" ]] || agent_alive "$other" || continue
     [[ ! -f "$rd/$other.ask-end" ]] || (( $(cat "$rd/$other.ask-end") >= start )) || continue
     others+=("$other")
   done
@@ -1412,6 +1440,7 @@ cmd_stop() {
   agent_session "$name" > "$rd/$name.session"
   herdr pane close "$pane" >/dev/null
   rm -f "$rd/$name.mark"
+  if [[ -f "$rd/$name.ask-start" && ! -f "$rd/$name.ask-end" ]]; then date +%s > "$rd/$name.ask-end"; fi
   echo "stopped $name ($pane); bring back with: hd resume $name"
 }
 

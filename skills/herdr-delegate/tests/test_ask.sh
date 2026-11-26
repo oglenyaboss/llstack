@@ -7,6 +7,25 @@ spawn_w1() {
   assert_calls_nonempty
 }
 
+state_file() {
+  local path
+  path="$(find "$XDG_CACHE_HOME/herdr-delegate" -name "$1" -print -quit)"
+  [[ -n "$path" ]] || t_fail "no state file $1"
+  printf '%s\n' "$path"
+}
+
+agent_prompt_calls() {
+  grep -c $'^agent\tprompt\t'"$1-" "$FAKE_DIR/calls.log" 2>/dev/null || true
+}
+
+no_state_file() {
+  [[ -z "$(find "$XDG_CACHE_HOME/herdr-delegate" -name "$1" -print -quit)" ]]
+}
+
+journal_entry() {
+  jq -c --arg name "$1" 'select(.name == $name)' "$XDG_CACHE_HOME/herdr-delegate/journal.jsonl" | tail -n 1
+}
+
 case_reply_check_scope() {
   spawn_w1
   write_hook <<'EOF'
@@ -377,40 +396,285 @@ EOF
 }
 
 case_concurrent_ask() {
-  spawn_w1
+  hd_run spawn s1 scout
+  assert_eq 0 "$HD_RC" "hd spawn s1"
+  hd_run spawn s2 scout
+  assert_eq 0 "$HD_RC" "hd spawn s2"
+  mkdir -p "$CASE_TMP/elsewhere"
+  hd_run spawn s3 scout --cwd "$CASE_TMP/elsewhere"
+  assert_eq 0 "$HD_RC" "hd spawn s3"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  s1-*)
+    "$HD" ask s2 'Other work.' > "$FAKE_DIR/s2.out"
+    mkdir -p src
+    printf 'b\n' > src/b.txt ;;
+  s2-*) printf 'other\n' > other.txt ;;
+esac
+turn "$2" "did it
+STATUS: done"
+EOF
+  hd_run ask s3 'Before.'
+  assert_eq 0 "$HD_RC" "hd ask s3"
+  sleep 1
+  hd_run ask s1 $'Do the work.\n\nScope: `src/b.txt`'
+  assert_eq 0 "$HD_RC" "hd ask s1"
+  assert_contains "$HD_OUT" '--- concurrent: s2 ' "s1 names s2"
+  assert_contains "$(cat "$FAKE_DIR/s2.out")" '--- concurrent: s1 ' "s2 names s1"
+  assert_jq '.concurrent == ["s2"]' "$(journal_entry s1)" "s1 journal"
+  assert_jq '.concurrent == []' "$(journal_entry s3)" "s3 journal"
+  sleep 1
+  hd_run ask s2 'After.'
+  assert_eq 0 "$HD_RC" "hd ask s2 after"
+  assert_not_contains "$HD_OUT" '--- concurrent' "sequential ask"
+}
+
+case_worker_exclusivity_same_tree() {
+  local root
+  root="$(git rev-parse --show-toplevel)"
+  mkdir -p "$CASE_TMP/driver"
+  hd_run spawn d1 scout --cwd "$CASE_TMP/driver"
+  assert_eq 0 "$HD_RC" "hd spawn d1"
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "hd spawn w1"
+  hd_run spawn w2 worker --cwd "$CASE_TMP/work/src"
+  assert_eq 0 "$HD_RC" "hd spawn w2 in a subdirectory"
+  hd_run spawn s1 scout
+  assert_eq 0 "$HD_RC" "hd spawn s1"
+  hd_run spawn rv1 reviewer
+  assert_eq 0 "$HD_RC" "hd spawn rv1"
+  hd_run spawn sk1 sidekick
+  assert_eq 0 "$HD_RC" "hd spawn sk1"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  d1-*)
+    rc=0
+    "$HD" ask w1 'Do the work.' > "$FAKE_DIR/w1.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/w1.rc"
+    rc=0
+    "$HD" ask w2 'Do the work.' > "$FAKE_DIR/w2.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/w2.rc"
+    rc=0
+    "$HD" ask s1 'Read src/a.txt.' > "$FAKE_DIR/s1.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/s1.rc"
+    rc=0
+    "$HD" ask rv1 'Review src/a.txt.' > "$FAKE_DIR/rv1.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/rv1.rc"
+    rc=0
+    "$HD" ask sk1 'Run a check.' > "$FAKE_DIR/sk1.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/sk1.rc"
+    printf 'timeout waiting\n'
+    exit 1 ;;
+  w1-*) printf 'timeout waiting\n'; exit 1 ;;
+esac
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask d1 'Drive the checks.'
+  assert_eq 0 "$HD_RC" "driver ask"
+  assert_contains "$HD_OUT" 'STATUS: still_working' "driver stays active"
+  assert_eq 0 "$(cat "$FAKE_DIR/w1.rc")" "active w1 ask"
+  assert_exists "$(state_file w1.ask-start)" "w1 is active"
+  no_state_file w1.ask-end || t_fail "active w1 has an end marker"
+
+  assert_eq 1 "$(cat "$FAKE_DIR/w2.rc")" "worker blocked in the same tree"
+  assert_contains "$(cat "$FAKE_DIR/w2.out")" "hd: cannot ask worker w2: active ask in $root (w1 (worker)); wait for it to finish, or run w2 in its own git worktree (--cwd)" "worker refusal"
+  assert_eq 0 "$(agent_prompt_calls w2)" "blocked worker got no prompt"
+  no_state_file w2.ask-start || t_fail "blocked worker wrote an ask-start"
+
+  assert_eq 1 "$(cat "$FAKE_DIR/s1.rc")" "scout blocked by a worker"
+  assert_contains "$(cat "$FAKE_DIR/s1.out")" "hd: cannot ask scout s1: active worker in $root (w1 (worker)); wait for it to finish, or run the worker in its own git worktree (--cwd)" "scout refusal"
+  assert_eq 0 "$(agent_prompt_calls s1)" "blocked scout got no prompt"
+  no_state_file s1.ask-start || t_fail "blocked scout wrote an ask-start"
+
+  local pair other role
+  for pair in rv1:reviewer sk1:sidekick; do
+    other="${pair%%:*}"
+    role="${pair#*:}"
+    assert_eq 1 "$(cat "$FAKE_DIR/$other.rc")" "$other blocked by a worker"
+    assert_contains "$(cat "$FAKE_DIR/$other.out")" "hd: cannot ask $role $other: active worker in $root (w1 (worker)); wait for it to finish, or run the worker in its own git worktree (--cwd)" "$other refusal"
+    assert_eq 0 "$(agent_prompt_calls "$other")" "blocked $other got no prompt"
+    no_state_file "$other.ask-start" || t_fail "blocked $other wrote an ask-start"
+  done
+}
+
+case_worker_exclusivity_active_scouts() {
+  local root
+  root="$(git rev-parse --show-toplevel)"
+  mkdir -p "$CASE_TMP/driver"
+  hd_run spawn d1 scout --cwd "$CASE_TMP/driver"
+  assert_eq 0 "$HD_RC" "hd spawn d1"
+  hd_run spawn s1 scout
+  assert_eq 0 "$HD_RC" "hd spawn s1"
+  hd_run spawn s2 scout
+  assert_eq 0 "$HD_RC" "hd spawn s2"
   hd_run spawn w2 worker
   assert_eq 0 "$HD_RC" "hd spawn w2"
-  mkdir -p "$CASE_TMP/elsewhere"
-  hd_run spawn w3 worker --cwd "$CASE_TMP/elsewhere"
-  assert_eq 0 "$HD_RC" "hd spawn w3"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  d1-*)
+    rc=0
+    "$HD" ask s1 'Read src/a.txt.' > "$FAKE_DIR/s1.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/s1.rc"
+    rc=0
+    "$HD" ask s2 'Read src/a.txt.' > "$FAKE_DIR/s2.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/s2.rc"
+    "$HD" ask w2 'Do the work.' > "$FAKE_DIR/w2.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/w2.rc"
+    printf 'timeout waiting\n'
+    exit 1 ;;
+  s1-*|s2-*) printf 'timeout waiting\n'; exit 1 ;;
+esac
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask d1 'Drive the checks.'
+  assert_eq 0 "$HD_RC" "driver ask"
+  assert_eq 0 "$(cat "$FAKE_DIR/s1.rc")" "active s1 ask"
+  assert_eq 0 "$(cat "$FAKE_DIR/s2.rc")" "active s2 ask"
+  assert_eq 1 "$(cat "$FAKE_DIR/w2.rc")" "worker blocked by scouts"
+  assert_contains "$(cat "$FAKE_DIR/w2.out")" "hd: cannot ask worker w2: active ask in $root (s1 (scout), s2 (scout)); wait for it to finish, or run w2 in its own git worktree (--cwd)" "joined blockers"
+  assert_eq 0 "$(agent_prompt_calls w2)" "blocked worker got no prompt"
+  no_state_file w2.ask-start || t_fail "blocked worker wrote an ask-start"
+}
+
+case_workers_in_separate_worktrees() {
+  git worktree add -q "$CASE_TMP/wt2" -b wt2
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "hd spawn w1"
+  hd_run spawn w2 worker --cwd "$CASE_TMP/wt2"
+  assert_eq 0 "$HD_RC" "hd spawn w2 in its own worktree"
   write_hook <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 source "$HD_TEST_LIB"
 case "$1" in
   w1-*)
-    "$HD" ask w2 'Other work.' > "$FAKE_DIR/w2.out"
-    mkdir -p src
-    printf 'b\n' > src/b.txt ;;
-  w2-*) printf 'other\n' > other.txt ;;
+    rc=0
+    "$HD" ask w2 $'Do the work.\n\nCheck: `bash tests/check.sh`\nScope: `src/impl.txt`' > "$FAKE_DIR/w2.out" 2>&1 || rc=$?
+    printf '%s\n' "$rc" > "$FAKE_DIR/w2.rc"
+    turn "$2" "STATUS: done" ;;
+  w2-*)
+    wt="$(dirname "$FAKE_DIR")/wt2"
+    mkdir -p "$wt/tests"
+    printf 'hello\n' > "$wt/src/impl.txt"
+    printf 'grep -q hello src/impl.txt\n' > "$wt/tests/check.sh"
+    turn "$2" "STATUS: done" ;;
 esac
-turn "$2" "did it
-STATUS: done"
 EOF
-  hd_run ask w3 'Before.'
-  assert_eq 0 "$HD_RC" "hd ask w3"
-  sleep 1
-  hd_run ask w1 $'Do the work.\n\nScope: `src/b.txt`'
+  hd_run ask w1 'Do the work.'
   assert_eq 0 "$HD_RC" "hd ask w1"
-  assert_contains "$HD_OUT" '--- concurrent: w2 ' "w1 names w2"
-  assert_contains "$(cat "$FAKE_DIR/w2.out")" '--- concurrent: w1 ' "w2 names w1"
-  local journal="$XDG_CACHE_HOME/herdr-delegate/journal.jsonl"
-  assert_jq '.concurrent == ["w2"]' "$(jq -c 'select(.name == "w1")' "$journal")" "w1 journal"
-  assert_jq '.concurrent == []' "$(jq -c 'select(.name == "w3")' "$journal")" "w3 journal"
-  sleep 1
-  hd_run ask w2 'After.'
-  assert_eq 0 "$HD_RC" "hd ask w2 after"
-  assert_not_contains "$HD_OUT" '--- concurrent' "sequential ask"
+  assert_eq 0 "$(cat "$FAKE_DIR/w2.rc")" "hd ask w2 in its worktree"
+  assert_not_contains "$HD_OUT" '--- concurrent' "w1 has no concurrent ask"
+  assert_not_contains "$(cat "$FAKE_DIR/w2.out")" '--- concurrent' "w2 has no concurrent ask"
+  assert_contains "$(cat "$FAKE_DIR/w2.out")" '--- red: Check exit=' "w2 red gate"
+  assert_jq '.concurrent == []' "$(journal_entry w1)" "w1 journal"
+  assert_jq '.concurrent == []' "$(journal_entry w2)" "w2 journal"
+  assert_eq hello "$(cat "$CASE_TMP/wt2/src/impl.txt")" "w2 implementation in its worktree"
+}
+
+case_stop_closes_open_ask() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*) printf 'timeout waiting\n'; exit 1 ;;
+esac
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "w1 times out"
+  assert_contains "$HD_OUT" 'STATUS: still_working' "w1 still working"
+  assert_exists "$(state_file w1.ask-start)" "w1 ask is open"
+  no_state_file w1.ask-end || t_fail "w1 ask ended on timeout"
+
+  hd_run stop w1
+  assert_eq 0 "$HD_RC" "hd stop w1"
+  assert_exists "$(state_file w1.ask-end)" "stop closed the ask"
+
+  hd_run ask w2 'Do it.'
+  assert_eq 0 "$HD_RC" "worker in the same tree after stop"
+}
+
+case_failed_dispatch_closes_open_ask() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*)
+    printf 'boom\n' >&2
+    exit 1 ;;
+esac
+turn "$2" "STATUS: done"
+EOF
+  hd_run ask w1 'Do the work.'
+  [[ "$HD_RC" != 0 ]] || t_fail "failed dispatch exited 0"
+  assert_contains "$HD_OUT" 'boom' "dispatch error"
+  assert_exists "$(state_file w1.ask-end)" "failed dispatch closed the ask"
+
+  hd_run ask w2 'Do it.'
+  assert_eq 0 "$HD_RC" "worker in the same tree after failure"
+}
+
+case_dead_agent_stale_ask() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*) printf 'timeout waiting\n'; exit 1 ;;
+  w2-*)
+    if (( $3 == 1 )); then
+      mkdir -p tests
+      printf 'hello\n' > src/impl.txt
+      printf 'grep -q hello src/impl.txt\n' > tests/check.sh
+      printf 'outside\n' > outside.txt
+    fi
+    turn "$2" "STATUS: done" ;;
+esac
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "w1 times out"
+  local dead
+  dead="$(find "$FAKE_DIR/agents" -maxdepth 1 -type d -name 'w1-*' -print -quit)"
+  [[ -n "$dead" ]] || t_fail "no fake agent for w1"
+  rm -rf "$dead"
+  no_state_file w1.ask-end || t_fail "stale w1 ask has an end marker"
+
+  hd_run ask w2 $'Do the work.\n\nCheck: `bash tests/check.sh`\nScope: `src/impl.txt`'
+  assert_eq 0 "$HD_RC" "worker after a dead agent's stale ask"
+  assert_not_contains "$HD_OUT" '--- concurrent' "dead agent is not concurrent"
+  assert_jq '.concurrent == []' "$(journal_entry w2)" "w2 journal"
+  assert_contains "$HD_OUT" '--- autofix 1/2: outside Scope: outside.txt' "Scope gate stays active"
+  assert_contains "$HD_OUT" '--- red: Check exit=' "red gate stays active"
+}
+
+case_skill_worktree_parallelism_docs() {
+  assert_file_contains "$ROOT/SKILL.md" 'git worktree add' "worktree recipe"
+  assert_file_contains "$ROOT/SKILL.md" 'herdr worktree create' "worktree recipe"
+  assert_file_contains "$ROOT/SKILL.md" 'hd spawn <name> worker --cwd <dir>' "worker spawn recipe"
+  assert_file_contains "$ROOT/SKILL.md" 'at most one worker per worktree' "worker exclusivity"
+  assert_file_contains "$ROOT/SKILL.md" '`hd ask` refuses a worker while another ask is active in the same git worktree' "ask refusal"
+  assert_file_contains "$ROOT/SKILL.md" 'parallel read-only asks in the same tree appear under `--- concurrent`' "updated Limits"
+  assert_contains "$(sed -n '50p' "$ROOT/SKILL.md")" 'ballooning context' "line 50 unchanged"
 }
 
 case_check_pipefail() {
@@ -768,6 +1032,13 @@ run_case ask_check_without_timeout case_check_without_timeout
 run_case ask_without_timeout_no_check case_ask_without_timeout_no_check
 run_case ask_check_without_backticks case_check_without_backticks
 run_case ask_concurrent case_concurrent_ask
+run_case ask_worker_exclusivity_active_worker case_worker_exclusivity_same_tree
+run_case ask_worker_exclusivity_active_scouts case_worker_exclusivity_active_scouts
+run_case ask_workers_separate_worktrees case_workers_in_separate_worktrees
+run_case ask_stop_closes_open_ask case_stop_closes_open_ask
+run_case ask_failed_dispatch_closes_ask case_failed_dispatch_closes_open_ask
+run_case ask_dead_agent_stale_marker case_dead_agent_stale_ask
+run_case ask_skill_worktree_docs case_skill_worktree_parallelism_docs
 case_claims_multiline_quote() {
   setup_claims
   printf 'foo(\n  "bar")\n' > src/m.txt
