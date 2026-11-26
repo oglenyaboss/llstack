@@ -555,17 +555,14 @@ ask_message() {
 }
 
 validate_worker_brief() {
-  local brief="$1" report
+  local brief="$1" check="${2:-}" report check_value
   [[ "$role" == worker && "$seq" -eq 1 ]] || return 0
   if [[ "$brief_from_file" != 1 ]] && ! grep -qE '^(Goal|Requirements|Acceptance):' <<<"$brief"; then
     return 0
   fi
-  if grep -qE '^Brief:[[:space:]]*raw([[:space:]]|$)' <<<"$brief"; then
-    return 0
-  fi
   report="$(awk '
     BEGIN {
-      nw = split("Goal Context Decisions Requirements Acceptance Scope Check", want, " ")
+      nw = split("Goal Context Decisions Requirements Removes Traps Acceptance Scope Check", want, " ")
       for (i = 1; i <= nw; i++) required[want[i]] = 1
     }
     {
@@ -576,6 +573,11 @@ validate_worker_brief() {
         if (sect in required) seen[sect] = 1
         in_acc = (sect == "Acceptance")
         in_req = (sect == "Requirements")
+        if (sect == "Removes" || sect == "Traps") {
+          header = line
+          sub(/^[^:]*:[[:space:]]*/, "", header)
+          if (header ~ /[^[:space:]]/) nonempty[sect] = 1
+        }
         if (sect == "Scope" && !scope_seen) {
           scope_seen = 1
           if (line !~ /`[^`]+`/) scope_bad = 1
@@ -585,19 +587,35 @@ validate_worker_brief() {
         next
       }
       if (in_req) count_req(line)
-      if (in_acc) count_case(line)
+      if (in_acc) {
+        count_case(line)
+        if (line ~ /^[[:space:]]*(-[[:space:]]*)?Seam:[[:space:]]*[^[:space:]]/) seam_seen = 1
+      }
+      if ((sect == "Removes" || sect == "Traps") && line ~ /[^[:space:]]/) nonempty[sect] = 1
     }
-    function count_case(line,    l) {
+    function count_case(line,    l, c, parts, n, i, tok) {
       l = tolower(line)
       gsub(/red[[:space:]]*→[[:space:]]*green/, "", l)
       gsub(/red[[:space:]]*->[[:space:]]*green/, "", l)
-      if (l ~ /→/ || l ~ /->/) acc_cases++
+      if (l ~ /→/ || l ~ /->/) {
+        acc_cases++
+        c = line
+        n = split(c, parts, /[^A-Za-z0-9_]/)
+        for (i = 1; i <= n; i++) {
+          tok = parts[i]
+          if (tok ~ /^R[0-9]+$/) covered[tok] = 1
+        }
+      }
     }
-    function count_req(line,    n, parts, i) {
+    function count_req(line,    n, parts, i, tok) {
       n = split(line, parts, /[^A-Za-z0-9_]/)
-      for (i = 1; i <= n; i++)
-        if (parts[i] ~ /^R[0-9]+$/)
-          if (!(parts[i] in reqs)) { reqs[parts[i]] = 1; req_count++ }
+      for (i = 1; i <= n; i++) {
+        tok = parts[i]
+        if (tok ~ /^R[0-9]+$/ && !(tok in reqs)) {
+          reqs[tok] = 1
+          req_order[++req_count] = tok
+        }
+      }
     }
     END {
       missing = ""
@@ -605,15 +623,38 @@ validate_worker_brief() {
         if (!(want[i] in seen)) missing = missing (missing == "" ? "" : ", ") want[i]
       if (missing != "")
         printf "- missing section(s) on their own line: %s\n", missing
+      empty = ""
+      for (i = 1; i <= nw; i++)
+        if ((want[i] == "Removes" || want[i] == "Traps") && (want[i] in seen) && !(want[i] in nonempty))
+          empty = empty (empty == "" ? "" : ", ") want[i]
+      if (empty != "")
+        printf "- empty section(s): %s\n", empty
       if (scope_bad)
         print "- Scope needs at least one backticked path on the Scope: line"
+      if (("Acceptance" in seen) && !seam_seen)
+        print "- Acceptance needs a non-empty \"Seam:\" line"
       needed = (req_count >= 1 ? req_count : 1)
       if (acc_cases < needed)
         printf "- Acceptance needs at least %d \"input → expected\" case line(s) (one per line), found %d\n", needed, acc_cases
+      absent = ""
+      for (i = 1; i <= req_count; i++)
+        if (!(req_order[i] in covered))
+          absent = absent (absent == "" ? "" : ", ") req_order[i]
+      if (req_count >= 1 && absent != "")
+        printf "- Acceptance missing \"input → expected\" case line(s) for: %s\n", absent
     }
   ' <<<"$brief")"
+  if grep -q '^Check:' <<<"$brief"; then
+    check_value="${check#"${check%%[![:space:]]*}"}"
+    check_value="${check_value%"${check_value##*[![:space:]]}"}"
+    if [[ -z "$check_value" ]]; then
+      report+=$'\n'"- Check command cannot be empty"
+    elif [[ "$check_value" == true || "$check_value" == : || "$check_value" == 'git diff --check' || "$check_value" == *--listTests* ]]; then
+      report+=$'\n'"- Check must run a real verification command (rejected stub: $check_value)"
+    fi
+  fi
   [[ -n "$report" ]] || return 0
-  die "$report"$'\n'"Fix the brief per skills/brief/SKILL.md (or add \"Brief: raw\" for non-code tasks)."
+  die "$report"$'\n'"Fix the brief per skills/brief/SKILL.md."
 }
 
 cmd_ask() {
@@ -667,7 +708,7 @@ cmd_ask() {
   fi
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
-  validate_worker_brief "$brief"
+  validate_worker_brief "$brief" "$check"
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
