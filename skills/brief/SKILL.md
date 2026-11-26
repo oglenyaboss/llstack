@@ -28,6 +28,7 @@ Removes: what the change takes away or replaces (a screen, a key, a route, a fla
 Traps:
 - where a plausible implementation goes wrong, with the correct shape: the check and the write it guards
   in one transaction (`SELECT … FOR UPDATE`), a second concurrent caller, the first/last/empty index
+- `"none — <reason>"` when no extra trap applies
 Acceptance:
 - Seam: the seam under test (public function, endpoint, component)
 - R1: <concrete input> → <exact expected literal>
