@@ -504,6 +504,32 @@ print_result() {
   echo "ctx=$(agent_ctx "$name")"
 }
 
+ask_elapsed() {
+  local rd start secs
+  rd="$(run_dir)"
+  [[ -f "$rd/$1.ask-start" ]] || return 0
+  start="$(cat "$rd/$1.ask-start" 2>/dev/null || true)"
+  [[ "$start" =~ ^[1-9][0-9]*$ ]] || return 0
+  secs=$(( $(date +%s) - start ))
+  if (( secs < 0 )); then secs=0; fi
+  if (( secs < 60 )); then
+    printf '%ss\n' "$secs"
+  else
+    printf '%dm%ds\n' "$(( secs / 60 ))" "$(( secs % 60 ))"
+  fi
+}
+
+print_still_working() {
+  local name="$1" note="${2:-}" ctx elapsed
+  ctx="$(agent_ctx "$name" || true)"
+  elapsed="$(ask_elapsed "$name" || true)"
+  echo "STATUS: still_working"
+  echo "ctx=$ctx elapsed=$elapsed"
+  if [[ -n "$note" ]]; then
+    echo "$name $note; continue with: hd wait $name"
+  fi
+}
+
 dispatch_prompt() {
   local name="$1" message="$2" timeout="$3" tag="$4"
   if [[ "$(agent_kind "$name")" == zcode ]]; then
@@ -677,16 +703,14 @@ cmd_ask() {
   res="$(dispatch_prompt "$name" "$msg" "$timeout" "${out##*/}")" || rc=$?
   if [[ $rc -ne 0 ]]; then
     if grep -q timeout <<<"$res"; then
-      echo "STATUS: still_working"
-      echo "$name has not finished; continue with: hd wait $name"
+      print_still_working "$name" "has not finished"
       exit 0
     fi
     echo "$res" >&2
     exit "$rc"
   fi
   if [[ "$(agent_kind "$name")" == zcode && "$res" == timeout ]]; then
-    echo "STATUS: still_working"
-    echo "$name has not finished; continue with: hd wait $name"
+    print_still_working "$name" "has not finished"
     exit 0
   fi
   finish "$name" "$timeout"
@@ -714,14 +738,12 @@ answer_turn() {
       return 0
     fi
     if [[ $rc -ne 0 || "$res" == timeout ]]; then
-      echo "STATUS: still_working"
-      echo "$name $note; continue with: hd wait $name"
+      print_still_working "$name" "$note"
       exit 0
     fi
   elif [[ $rc -ne 0 ]]; then
     if grep -q timeout <<<"$res"; then
-      echo "STATUS: still_working"
-      echo "$name $note; continue with: hd wait $name"
+      print_still_working "$name" "$note"
       exit 0
     fi
     echo "$res" >&2
@@ -926,13 +948,11 @@ settle_ask() {
         return
       fi
       if [[ $retry_rc -ne 0 || "$res" == timeout ]]; then
-        echo "STATUS: still_working"
-        echo "$name was sent an autofix round; continue with: hd wait $name"
+        print_still_working "$name" "was sent an autofix round"
         exit 0
       fi
     elif [[ $retry_rc -ne 0 ]]; then
-      echo "STATUS: still_working"
-      echo "$name was sent an autofix round; continue with: hd wait $name"
+      print_still_working "$name" "was sent an autofix round"
       exit 0
     fi
     finish "$name" "$timeout"
@@ -1301,14 +1321,14 @@ cmd_wait() {
     local res
     res="$(dispatch_wait "$name" "$timeout")" || true
     if [[ "$res" == timeout ]]; then
-      echo "STATUS: still_working"
+      print_still_working "$name"
       exit 0
     fi
     finish "$name" "$timeout"
     return
   fi
   if ! dispatch_wait "$name" "$timeout"; then
-    echo "STATUS: still_working"
+    print_still_working "$name"
     exit 0
   fi
   finish "$name" "$timeout"

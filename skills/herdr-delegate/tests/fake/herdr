@@ -123,7 +123,13 @@ agent() {
         exit "$rc"
       fi
       ;;
-    wait) ;;
+    wait)
+      if [[ -x "$FAKE_DIR/on-wait" ]]; then
+        local rc=0
+        "$FAKE_DIR/on-wait" "$1" || rc=$?
+        exit "$rc"
+      fi
+      ;;
     read)
       local target="${1:-}" pane
       if [[ ! -d "$FAKE_DIR/agents/$target" ]] && pane="$(pane_target "$target")"; then
