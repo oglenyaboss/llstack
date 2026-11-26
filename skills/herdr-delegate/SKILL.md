@@ -47,7 +47,7 @@ Complex logic goes to a worker when Traps and Acceptance cover its edge cases; y
 
 `hd` appends one line per finished ask to `~/.cache/herdr-delegate/journal.jsonl`: status, check exit, Scope, changed and outside-Scope files, brief and payload paths. Your `hd note` lessons land there too; read the journal for recurring causes before changing how you brief.
 
-The assigned brief remains the completion criterion while waiting. Elapsed time, growing context, and other agents finishing are not reasons to shorten it or request an early report. Intervene on a concrete error, a request for a decision, observed work outside the brief, or a user instruction. A timeout calls for checking state and continuing the wait while the agent is progressing.
+The assigned brief remains the completion criterion while waiting. Elapsed time and other agents finishing are not reasons to shorten it or request an early report. Intervene on a concrete error, a request for a decision, observed work outside the brief, a stalled or ballooning context (e.g., `ctx` approaching or past 200k on `STATUS: still_working` — inspect with `hd peek`, then stop and hand off a narrower brief to a fresh agent if it is looping), or a user instruction. A timeout calls for checking `ctx`, `elapsed`, and progress before continuing the wait.
 
 ## Briefs in hd
 

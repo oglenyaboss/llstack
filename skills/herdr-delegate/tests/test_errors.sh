@@ -19,6 +19,91 @@ EOF
   assert_contains "$HD_OUT" "STATUS: still_working"
 }
 
+assert_matches() {
+  local text="$1" regex="$2" label="${3:-output}"
+  [[ "$text" =~ $regex ]] || t_fail "$label: no match for [$regex] in [${text//$'\n'/ | }]"
+}
+
+assert_after_match() {
+  local text="$1" first="$2" regex="$3" line found=0
+  while IFS= read -r line; do
+    if (( found )); then
+      [[ "$line" =~ $regex ]] || t_fail "line after [$first] is [$line], expected match [$regex]"
+      return 0
+    fi
+    [[ "$line" =~ $first ]] && found=1
+  done <<< "$text"
+  t_fail "missing line matching [$first]"
+}
+
+write_wait_hook() {
+  cat > "$FAKE_DIR/on-wait"
+  chmod +x "$FAKE_DIR/on-wait"
+}
+
+timeout_with_usage_hook() {
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+turn "$2" "partial"
+printf '%s\n' "$(( $(date +%s) - 125 ))" > "$(find "$XDG_CACHE_HOME/herdr-delegate" -name w1.ask-start -print -quit)"
+printf 'timeout waiting\n'
+exit 1
+EOF
+}
+
+case_still_working_ask_diagnostics() {
+  spawn_w1
+  timeout_with_usage_hook
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "hd ask exit"
+  assert_contains "$HD_OUT" "STATUS: still_working" "ask status"
+  assert_matches "$HD_OUT" 'ctx=3k elapsed=2m[0-9]+s' "ask diagnostics"
+  assert_after_match "$HD_OUT" '^STATUS: still_working$' '^ctx=3k elapsed=2m[0-9]+s$'
+  assert_after_match "$HD_OUT" '^ctx=3k elapsed=2m[0-9]+s$' '^w1 has not finished; continue with: hd wait w1$'
+}
+
+case_still_working_wait_diagnostics() {
+  spawn_w1
+  timeout_with_usage_hook
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "hd ask exit"
+  write_wait_hook <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  hd_run wait w1
+  assert_eq 0 "$HD_RC" "hd wait exit"
+  assert_contains "$HD_OUT" "STATUS: still_working" "wait status"
+  assert_matches "$HD_OUT" 'ctx=3k elapsed=2m[0-9]+s' "wait diagnostics"
+  assert_after_match "$HD_OUT" '^STATUS: still_working$' '^ctx=3k elapsed=2m[0-9]+s$'
+  assert_not_contains "$HD_OUT" "continue with: hd wait w1" "wait has no note"
+}
+
+case_still_working_empty_diagnostics() {
+  spawn_w1
+  rm -f "$XDG_CACHE_HOME"/herdr-delegate/*/w1.ask-start
+  write_wait_hook <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  hd_run wait w1
+  assert_eq 0 "$HD_RC" "hd wait exit"
+  assert_contains "$HD_OUT" "STATUS: still_working" "wait status"
+  assert_after_match "$HD_OUT" '^STATUS: still_working$' '^ctx= elapsed=$'
+  assert_not_contains "$HD_OUT" "ctx=0" "no invented ctx"
+  assert_not_contains "$HD_OUT" "elapsed=0s" "no invented elapsed"
+}
+
+case_still_working_skill_rule() {
+  local line
+  line="$(sed -n '50p' "$ROOT/SKILL.md")"
+  assert_not_contains "$line" "growing context" "skill rule"
+  assert_contains "$line" "ballooning context" "skill rule"
+  assert_contains "$line" 'checking `ctx`, `elapsed`' "skill rule"
+}
+
 case_blocked_status() {
   spawn_w1
   write_hook <<'EOF'
@@ -301,6 +386,10 @@ EOF
 }
 
 run_case errors_prompt_timeout case_prompt_timeout
+run_case errors_still_working_ask_diagnostics case_still_working_ask_diagnostics
+run_case errors_still_working_wait_diagnostics case_still_working_wait_diagnostics
+run_case errors_still_working_empty_diagnostics case_still_working_empty_diagnostics
+run_case errors_still_working_skill_rule case_still_working_skill_rule
 run_case errors_blocked_status case_blocked_status
 run_case errors_provider_error_retry case_provider_error_retry
 run_case errors_provider_error_twice case_provider_error_twice
