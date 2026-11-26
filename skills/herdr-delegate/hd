@@ -370,9 +370,18 @@ require_exact_pi_model() {
 $(awk -v s="${model##*/}" 'NR > 1 && index($2, s) { print "  " $1 "/" $2 }' <<<"$catalog")"
 }
 
+close_ask() {
+  local rd; rd="$(run_dir)"
+  if [[ -f "$rd/$1.ask-start" && ! -f "$rd/$1.ask-end" ]]; then date +%s > "$rd/$1.ask-end"; fi
+}
+
 record_spawn() {
   local rd="$1" pane="$2" name="$3" role="$4" kind="$5" model="$6" cwd="$7"
   local slot="${8:-$4}" thinking="${9:-}" fallback="${10:-[]}"
+  if [[ -z "${HD_KEEP_ASK_STATE:-}" ]]; then
+    close_ask "$name"
+    rm -f "$rd/$name.brief-validated"
+  fi
   echo "$role" > "$rd/$name.role"
   echo "$slot" > "$rd/$name.slot"
   echo "$kind" > "$rd/$name.agent"
@@ -556,8 +565,9 @@ ask_message() {
 }
 
 validate_worker_brief() {
-  local brief="$1" check="${2:-}" report check_value
-  [[ "$role" == worker && "$seq" -eq 1 ]] || return 0
+  local brief="$1" check="${2:-}" report check_value rd
+  rd="$(run_dir)"
+  [[ "$role" == worker && ! -f "$rd/$name.brief-validated" ]] || return 0
   if [[ "$brief_from_file" != 1 ]] && ! grep -qE '^(Goal|Requirements|Acceptance):' <<<"$brief"; then
     return 0
   fi
@@ -710,7 +720,18 @@ cmd_ask() {
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
   validate_worker_brief "$brief" "$check"
-  check_tree_exclusivity "$name" "$role"
+  acquire_admit_lock
+  trap release_admit_lock EXIT
+  if ! check_tree_exclusivity "$name" "$role"; then
+    release_admit_lock
+    trap - EXIT
+    die "$EXCLUSIVITY_ERROR"
+  fi
+  date +%s > "$rd/$name.ask-start"
+  rm -f "$rd/$name.ask-end"
+  touch "$rd/$name.brief-validated"
+  release_admit_lock
+  trap - EXIT
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
@@ -732,8 +753,6 @@ cmd_ask() {
   fi
   sed -n '/^Scope:/{p;q;}' <<<"$brief" | grep -o '`[^`]*`' | tr -d '`' | sed 's|^\./||' > "$rd/$name.scope" || true
   snapshot_tree "$(agent_cwd "$name")" > "$rd/$name.base" || rm -f "$rd/$name.base"
-  date +%s > "$rd/$name.ask-start"
-  rm -f "$rd/$name.ask-end"
   local mark_offset=0
   [[ -f "$session" ]] && mark_offset="$(wc -l < "$session")"
   mark_offset="${mark_offset//[[:space:]]/}"
@@ -750,7 +769,7 @@ cmd_ask() {
       exit 0
     fi
     echo "$res" >&2
-    if [[ -f "$rd/$name.ask-start" && ! -f "$rd/$name.ask-end" ]]; then date +%s > "$rd/$name.ask-end"; fi
+    close_ask "$name"
     exit "$rc"
   fi
   if [[ "$(agent_kind "$name")" == zcode && "$res" == timeout ]]; then
@@ -791,6 +810,7 @@ answer_turn() {
       exit 0
     fi
     echo "$res" >&2
+    close_ask "$name"
     exit "$rc"
   fi
   finish "$name" "$timeout"
@@ -838,7 +858,7 @@ fallback_switch() {
   printf -- '--- fallback: %s → %s: %s\n' "$old" "$model" "$err"
   printf '%s\n' "${err//$'\n'/ }" >> "$rd/$name.tried-errors"
   [[ -z "$pane" ]] || herdr pane close "$pane" >/dev/null
-  cmd_spawn "$name" "$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")" --cwd "$(agent_cwd "$name")" \
+  HD_KEEP_ASK_STATE=1 cmd_spawn "$name" "$(cat "$rd/$name.slot" 2>/dev/null || cat "$rd/$name.role")" --cwd "$(agent_cwd "$name")" \
     --agent "$harness" --model "$model" --thinking "$thinking" >/dev/null
   printf '%s\n' "$rest" > "$rd/$name.fallback"
   printf '%s\n' "$out" > "$rd/$name.out"
@@ -991,13 +1011,23 @@ settle_ask() {
         zcode_print_exit "$name"
         return
       fi
-      if [[ $retry_rc -ne 0 || "$res" == timeout ]]; then
+      if [[ "$res" == timeout ]]; then
         print_still_working "$name" "was sent an autofix round"
         exit 0
       fi
+      if [[ $retry_rc -ne 0 ]]; then
+        echo "$res" >&2
+        close_ask "$name"
+        exit "$retry_rc"
+      fi
     elif [[ $retry_rc -ne 0 ]]; then
-      print_still_working "$name" "was sent an autofix round"
-      exit 0
+      if grep -q timeout <<<"$res"; then
+        print_still_working "$name" "was sent an autofix round"
+        exit 0
+      fi
+      echo "$res" >&2
+      close_ask "$name"
+      exit "$retry_rc"
     fi
     finish "$name" "$timeout"
     return
@@ -1283,6 +1313,21 @@ run_claims() {
 
 tree_root() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || echo "$1"; }
 
+acquire_admit_lock() {
+  local rd; rd="$(run_dir)"
+  local i=0
+  while ! mkdir "$rd/.admit.lock" 2>/dev/null; do
+    (( i < 100 )) || die "cannot ask: another ask is being admitted in this run"
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+release_admit_lock() {
+  local rd; rd="$(run_dir)"
+  rmdir "$rd/.admit.lock" 2>/dev/null || true
+}
+
 check_tree_exclusivity() {
   local name="$1" role="$2" rd root f other other_role joined=""
   local -a blockers=()
@@ -1291,10 +1336,14 @@ check_tree_exclusivity() {
   for f in "$rd"/*.ask-start; do
     [[ -e "$f" ]] || continue
     other="$(basename "$f" .ask-start)"
+    other_role="$(cat "$rd/$other.role" 2>/dev/null || echo unknown)"
+    if [[ "$other" == "$name" && ! -f "$rd/$name.ask-end" ]] && agent_alive "$name"; then
+      EXCLUSIVITY_ERROR="cannot ask $role $name: active ask in $root ($name ($other_role)); wait for it to finish"
+      return 1
+    fi
     [[ "$other" != "$name" && ! -f "$rd/$other.ask-end" ]] || continue
     [[ "$(tree_root "$(agent_cwd "$other")")" == "$root" ]] || continue
     agent_alive "$other" || continue
-    other_role="$(cat "$rd/$other.role" 2>/dev/null || echo unknown)"
     if [[ "$role" == worker || "$other_role" == worker ]]; then
       blockers+=("$other ($other_role)")
     fi
@@ -1302,9 +1351,11 @@ check_tree_exclusivity() {
   (( ${#blockers[@]} )) || return 0
   for other in "${blockers[@]}"; do joined+="${joined:+, }$other"; done
   if [[ "$role" == worker ]]; then
-    die "cannot ask worker $name: active ask in $root ($joined); wait for it to finish, or run $name in its own git worktree (--cwd)"
+    EXCLUSIVITY_ERROR="cannot ask worker $name: active ask in $root ($joined); wait for it to finish, or run $name in its own git worktree (--cwd)"
+    return 1
   fi
-  die "cannot ask $role $name: active worker in $root ($joined); wait for it to finish, or run the worker in its own git worktree (--cwd)"
+  EXCLUSIVITY_ERROR="cannot ask $role $name: active worker in $root ($joined); wait for it to finish, or run the worker in its own git worktree (--cwd)"
+  return 1
 }
 
 run_concurrent() {
@@ -1448,7 +1499,7 @@ cmd_resume() {
   local name="${1:-}"; [[ -n "$name" ]] || usage
   shift
   if [[ "$(agent_kind "$name")" == zcode ]]; then
-    resume_zcode "$name" "$@"
+    HD_KEEP_ASK_STATE=1 resume_zcode "$name" "$@"
     return
   fi
   local rd session slot saved=() saved_fallback="" body
@@ -1463,7 +1514,7 @@ cmd_resume() {
   [[ -f "$rd/$name.model" ]] && saved+=(--model "$(<"$rd/$name.model")")
   [[ -f "$rd/$name.thinking" ]] && saved+=(--thinking "$(<"$rd/$name.thinking")")
   [[ -f "$rd/$name.agent" ]] && saved+=(--agent "$(<"$rd/$name.agent")")
-  cmd_spawn "$name" "$slot" --session "$session" "${saved[@]}" "$@"
+  HD_KEEP_ASK_STATE=1 cmd_spawn "$name" "$slot" --session "$session" "${saved[@]}" "$@"
   [[ -z "$saved_fallback" ]] || printf '%s\n' "$saved_fallback" > "$rd/$name.fallback"
 }
 

@@ -23,7 +23,7 @@ The table is `.github/risk-tiers.yml`; the classifier is `scripts/risk.mjs` in t
 
 ## Rules that hold across tiers
 
-- Each round uses exactly the reviewer count the table names; do not split one round into extra thematic reviewers.
+- The initial review round uses exactly the reviewer count the table names; do not split one round into extra thematic reviewers.
 - One review round. Re-review is capped at one round: High only, the fix diff only, the first reviewer only. There is no third or fourth control round; the lead checks pinpoint follow-ups and escalates unresolved blockers to the owner.
 - High e2e runs only the affected specs; a full suite needs a shared foundation change or the owner's request.
 - An epic branch runs review and e2e gates once for the assembled epic PR, not per subtask; its children are accepted by the worker's `Check` and the lead's diff review.

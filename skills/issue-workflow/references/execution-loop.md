@@ -29,7 +29,7 @@ A batch is every ready issue outside an epic, carried by one PR.
 - No size limit. The owner trims the batch when its hot spots will not fit one reading.
 - The batch's risk tier is the highest tier among its issues. The gate for that tier runs once, for the whole batch.
 - An epic's children never ride in a batch; they go through the epic's branch. Large and breaking changes belong in an epic.
-- An epic branch runs the batch gates once, on the assembled epic PR: all child commits → one review round → fixes → at most one High re-review of the fix diff → one e2e run → the owner's approval. There is no third or fourth review round.
+- An epic branch runs the batch gates once, on the assembled epic PR: all child commits → one review round → fixes → at most one High re-review of the fix diff → one e2e run for High → the owner's approval. There is no third or fourth review round.
 - Between subtasks, the worker's `Check` plus the lead's diff review accepts the child task: no intermediate reviewers, full repo verify, or e2e unless the owner asks for one.
 - Order for a batch: all commits → review → fixes → e2e → the owner's approval. The approval covers one commit, so nothing changes after it.
 - Review goes commit by commit: each commit against its issue, then the seams between commits in the whole diff.

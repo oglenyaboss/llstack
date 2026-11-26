@@ -631,6 +631,231 @@ EOF
   assert_eq 0 "$HD_RC" "worker in the same tree after failure"
 }
 
+case_retry_send_failure_closes_ask() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*)
+    if (( $3 == 1 )); then
+      turn "$2" "partial" error overloaded
+    else
+      printf 'retry send refused\n' >&2
+      exit 7
+    fi ;;
+  w2-*) turn "$2" "STATUS: done" ;;
+esac
+EOF
+  hd_run ask w1 'Do the work.'
+  [[ "$HD_RC" -ne 0 ]] || t_fail "retry send failure exited 0"
+  assert_contains "$HD_OUT" 'retry send refused' "retry send error"
+  assert_not_contains "$HD_OUT" 'STATUS: still_working' "no false still_working"
+  assert_eq 2 "$(prompt_calls)" "prompt calls after retry"
+  assert_exists "$(state_file w1.ask-end)" "retry failure closed the ask"
+
+  hd_run ask w2 'Do it.'
+  assert_eq 0 "$HD_RC" "worker in the same tree after retry failure"
+  no_state_file .admit.lock || t_fail "admission lock left behind"
+}
+
+case_autofix_send_failure_closes_ask() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*)
+    if (( $3 == 1 )); then
+      turn "$2" "did it
+STATUS: done"
+    else
+      printf 'autofix send refused\n' >&2
+      exit 7
+    fi ;;
+  w2-*) turn "$2" "STATUS: done" ;;
+esac
+EOF
+  local brief=$'Do the work.\n\nCheck: `test -f src/missing.txt`'
+  hd_run ask w1 "$brief"
+  [[ "$HD_RC" -ne 0 ]] || t_fail "autofix send failure exited 0"
+  assert_contains "$HD_OUT" '--- autofix 1/2' "autofix round"
+  assert_contains "$HD_OUT" 'autofix send refused' "autofix send error"
+  assert_not_contains "$HD_OUT" 'STATUS: still_working' "no false still_working"
+  assert_eq 2 "$(prompt_calls)" "prompt calls after autofix"
+  assert_exists "$(state_file w1.ask-end)" "autofix failure closed the ask"
+
+  hd_run ask w2 'Do it.'
+  assert_eq 0 "$HD_RC" "worker in the same tree after autofix failure"
+  no_state_file .admit.lock || t_fail "admission lock left behind"
+}
+
+case_autofix_timeout_keeps_ask_open() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*)
+    if (( $3 == 1 )); then
+      turn "$2" "did it
+STATUS: done"
+    else
+      printf 'timeout waiting\n'
+      exit 1
+    fi ;;
+  w2-*) turn "$2" "STATUS: done" ;;
+esac
+EOF
+  local brief=$'Do the work.\n\nCheck: `test -f src/missing.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "autofix timeout exit"
+  assert_contains "$HD_OUT" '--- autofix 1/2' "autofix round"
+  assert_contains "$HD_OUT" 'STATUS: still_working' "autofix timeout status"
+  assert_contains "$HD_OUT" 'w1 was sent an autofix round' "autofix timeout note"
+  assert_eq 2 "$(prompt_calls)" "prompt calls after autofix timeout"
+  assert_exists "$(state_file w1.ask-start)" "autofix timeout keeps the ask open"
+  no_state_file w1.ask-end || t_fail "autofix timeout closed the ask"
+
+  hd_run ask w2 'Do it.'
+  assert_eq 1 "$HD_RC" "worker blocked by the still-open ask"
+  assert_contains "$HD_OUT" 'active ask in' "open ask still blocks the tree"
+  assert_eq 2 "$(prompt_calls)" "w2 got no prompt"
+}
+
+case_second_ask_same_worker_refused() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*)
+    if (( $3 == 1 )); then
+      printf 'timeout waiting\n'
+      exit 1
+    fi
+    turn "$2" "STATUS: done" ;;
+esac
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "first ask still working"
+  assert_exists "$(state_file w1.ask-start)" "first ask is open"
+  no_state_file w1.ask-end || t_fail "first ask ended"
+
+  hd_run ask w1 'Do the work again.'
+  assert_eq 1 "$HD_RC" "second ask to the same worker"
+  assert_contains "$HD_OUT" 'active ask in' "self-overlap refusal"
+  assert_eq 1 "$(prompt_calls)" "no second prompt"
+  no_state_file .admit.lock || t_fail "admission lock left behind"
+}
+
+case_fallback_switch_keeps_ask_state() {
+  printf 'prov m1\nprov m2\nprov m3\n' > "$FAKE_DIR/pi-models"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"worker":{"fallback":[{"model":"prov/m2"}]}}}'
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "hd spawn w1 with a fallback"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+rd="$(find "$XDG_CACHE_HOME/herdr-delegate" -type d -name test_p0 -print -quit)"
+start="$rd/w1.ask-start"
+if (( $3 == 1 )); then
+  cp "$start" "$FAKE_DIR/start-original"
+  turn "$2" "partial" error overloaded
+elif (( $3 == 2 )); then
+  turn "$2" "partial" error overloaded
+else
+  [[ "$(cat "$FAKE_DIR/start-original")" == "$(cat "$start")" ]] && : > "$FAKE_DIR/start-kept"
+  [[ -f "$rd/w1.brief-validated" ]] && : > "$FAKE_DIR/brief-kept"
+  [[ ! -f "$rd/w1.ask-end" ]] && : > "$FAKE_DIR/ask-still-open"
+  turn "$2" "STATUS: done"
+fi
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "ask with a fallback switch"
+  assert_contains "$HD_OUT" '--- fallback:' "fallback switch"
+  assert_exists "$FAKE_DIR/start-kept" "fallback kept the ask-start marker"
+  assert_exists "$FAKE_DIR/brief-kept" "fallback kept brief validation"
+  assert_exists "$FAKE_DIR/ask-still-open" "fallback kept the ask open"
+  assert_exists "$(state_file w1.ask-end)" "ask ended after the fallback turn"
+}
+
+case_concurrent_admission_refuses_second() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*|w2-*) turn "$2" "STATUS: done" ;;
+esac
+EOF
+  printf 'delay\n' > "$FAKE_DIR/slow-admission"
+  cat > "$FAKE_DIR/on-agent-get" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  w1-*|w2-*)
+    if [[ -f "$FAKE_DIR/slow-admission" ]]; then
+      : > "$FAKE_DIR/admit-arrived.${1%%-*}"
+      for ((i = 0; i < 200; i++)); do
+        [[ -f "$FAKE_DIR/admit-go" ]] && break
+        sleep 0.05
+      done
+    fi ;;
+esac
+EOF
+  chmod +x "$FAKE_DIR/on-agent-get"
+
+  (
+    set +e
+    "$HD" ask w1 'Do the work.' > "$FAKE_DIR/w1.out" 2>&1
+    printf '%s\n' "$?" > "$FAKE_DIR/w1.rc"
+  ) &
+  local p1=$!
+  (
+    set +e
+    "$HD" ask w2 'Do the work.' > "$FAKE_DIR/w2.out" 2>&1
+    printf '%s\n' "$?" > "$FAKE_DIR/w2.rc"
+  ) &
+  local p2=$!
+  local i arrivals=0
+  for ((i = 0; i < 200; i++)); do
+    arrivals="$(find "$FAKE_DIR" -maxdepth 1 -name 'admit-arrived.*' | wc -l | tr -d ' ')"
+    (( arrivals >= 2 )) && break
+    sleep 0.05
+  done
+  assert_eq 2 "$arrivals" "both asks reached admission"
+  : > "$FAKE_DIR/admit-go"
+  wait "$p1"
+  wait "$p2"
+
+  local rc1 rc2
+  rc1="$(cat "$FAKE_DIR/w1.rc")"
+  rc2="$(cat "$FAKE_DIR/w2.rc")"
+  if [[ "$rc1" == 0 && "$rc2" == 0 ]] || [[ "$rc1" != 0 && "$rc2" != 0 ]]; then
+    t_fail "expected exactly one admitted ask, got w1=$rc1 w2=$rc2"
+  fi
+  if [[ "$rc1" != 0 ]]; then
+    assert_contains "$(cat "$FAKE_DIR/w1.out")" 'cannot ask worker' "w1 refusal"
+  else
+    assert_contains "$(cat "$FAKE_DIR/w2.out")" 'cannot ask worker' "w2 refusal"
+  fi
+  no_state_file .admit.lock || t_fail "admission lock left behind"
+}
+
 case_dead_agent_stale_ask() {
   spawn_w1
   hd_run spawn w2 worker
@@ -1037,6 +1262,12 @@ run_case ask_worker_exclusivity_active_scouts case_worker_exclusivity_active_sco
 run_case ask_workers_separate_worktrees case_workers_in_separate_worktrees
 run_case ask_stop_closes_open_ask case_stop_closes_open_ask
 run_case ask_failed_dispatch_closes_ask case_failed_dispatch_closes_open_ask
+run_case ask_retry_send_failure_closes_ask case_retry_send_failure_closes_ask
+run_case ask_autofix_send_failure_closes_ask case_autofix_send_failure_closes_ask
+run_case ask_autofix_timeout_keeps_ask_open case_autofix_timeout_keeps_ask_open
+run_case ask_second_ask_same_worker_refused case_second_ask_same_worker_refused
+run_case ask_fallback_switch_keeps_ask_state case_fallback_switch_keeps_ask_state
+run_case ask_concurrent_admission_refuses_second case_concurrent_admission_refuses_second
 run_case ask_dead_agent_stale_marker case_dead_agent_stale_ask
 run_case ask_skill_worktree_docs case_skill_worktree_parallelism_docs
 case_claims_multiline_quote() {

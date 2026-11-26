@@ -7,6 +7,17 @@ spawn_w1() {
   assert_calls_nonempty
 }
 
+state_file() {
+  local path
+  path="$(find "$XDG_CACHE_HOME/herdr-delegate" -name "$1" -print -quit)"
+  [[ -n "$path" ]] || t_fail "no state file $1"
+  printf '%s\n' "$path"
+}
+
+no_state_file() {
+  [[ -z "$(find "$XDG_CACHE_HOME/herdr-delegate" -name "$1" -print -quit)" ]]
+}
+
 done_hook() {
   write_hook <<'EOF'
 #!/usr/bin/env bash
@@ -233,6 +244,69 @@ EOF
   assert_eq 0 "$(prompt_calls)" "agent prompt calls"
 }
 
+case_brief_gate_respawn_clears_stale_state() {
+  spawn_w1
+  hd_run spawn w2 worker
+  assert_eq 0 "$HD_RC" "hd spawn w2"
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$1" in
+  w1-*) printf 'timeout waiting\n'; exit 1 ;;
+  w2-*) turn "$2" "STATUS: done" ;;
+esac
+EOF
+  hd_run ask w1 'Do the work.'
+  assert_eq 0 "$HD_RC" "w1 timed out"
+  assert_exists "$(state_file w1.ask-start)" "w1 ask is open"
+  no_state_file w1.ask-end || t_fail "w1 ask ended on timeout"
+
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "fresh spawn under the dead name"
+  assert_exists "$(state_file w1.ask-end)" "fresh spawn closed the stale ask"
+  no_state_file w1.brief-validated || t_fail "fresh spawn kept brief validation"
+
+  hd_run ask w2 'Do the work.'
+  assert_eq 0 "$HD_RC" "worker in the same tree after respawn"
+}
+
+case_brief_gate_fresh_spawn_reruns_gate() {
+  spawn_w1
+  done_hook
+  valid_brief valid-brief.md
+  hd_run ask w1 @valid-brief.md
+  assert_eq 0 "$HD_RC" "valid first brief"
+  assert_exists "$(state_file w1.brief-validated)" "first brief was validated"
+
+  hd_run spawn w1 worker
+  assert_eq 0 "$HD_RC" "fresh spawn under the same name"
+  printf 'Decision: (a).\n' > followup.md
+  hd_run ask w1 @followup.md
+  [[ "$HD_RC" -ne 0 ]] || t_fail "fresh worker skipped the brief gate"
+  assert_contains "$HD_OUT" "missing section(s) on their own line:" "brief gate rerun"
+  assert_eq 1 "$(prompt_calls)" "no prompt for the rejected brief"
+}
+
+case_brief_gate_resume_keeps_gate_state() {
+  spawn_w1
+  done_hook
+  valid_brief valid-brief.md
+  hd_run ask w1 @valid-brief.md
+  assert_eq 0 "$HD_RC" "valid first brief"
+
+  hd_run stop w1
+  assert_eq 0 "$HD_RC" "hd stop w1"
+  hd_run resume w1
+  assert_eq 0 "$HD_RC" "hd resume w1"
+  assert_exists "$(state_file w1.brief-validated)" "resume kept brief validation"
+
+  printf 'Decision: (a).\n' > followup.md
+  hd_run ask w1 @followup.md
+  assert_eq 0 "$HD_RC" "resumed worker follows up without the brief gate"
+  assert_eq 2 "$(prompt_calls)" "follow-up prompt after resume"
+}
+
 case_brief_gate_r1_retry_still_seq1() {
   spawn_w1
   done_hook
@@ -406,3 +480,6 @@ run_case brief_gate_r3_scout case_brief_gate_r3_scout
 run_case brief_gate_r4_one_line_arrows case_brief_gate_r4_one_line_arrows
 run_case brief_gate_r4_red_green case_brief_gate_r4_red_green
 run_case brief_gate_r1_retry_still_seq1 case_brief_gate_r1_retry_still_seq1
+run_case brief_gate_respawn_clears_stale_state case_brief_gate_respawn_clears_stale_state
+run_case brief_gate_fresh_spawn_reruns_gate case_brief_gate_fresh_spawn_reruns_gate
+run_case brief_gate_resume_keeps_gate_state case_brief_gate_resume_keeps_gate_state
