@@ -1,0 +1,40 @@
+{
+  "packages": [
+    "npm:pi-web-access@0.28.0",
+    "https://github.com/DanielVASE/pi-resume-after-compact",
+    "npm:pi-cache-optimizer",
+    "npm:@pi-archimedes/core",
+    "npm:@pi-archimedes/footer",
+    "npm:@pi-archimedes/diff",
+    "npm:pi-peak-hours",
+    "npm:pi-bg-bash",
+    "git:github.com/oglenyaboss/pi-status-anim"
+  ],
+  "defaultThinkingLevel": "max",
+  "defaultTools": [
+    "+tool_search",
+    "+codemode"
+  ],
+  "enableSkillCommands": true,
+  "defaultProjectTrust": "ask",
+  "theme": "dark",
+  "hideThinkingBlock": true,
+  "archimedes.core": {
+    "editorSpinBorder": false
+  },
+  "statusAnim": {
+    "robotAvatar": false
+  },
+  "fullscreenScrollbar": "hidden",
+  "tuiMode": "fullscreen",
+  "showHardwareCursor": true,
+  "peakHours": {
+    "show": "always",
+    "enabled": true
+  },
+  "retry": {
+    "maxRetries": 6,
+    "baseDelayMs": 3000,
+    "maxAgentDelayMs": 30000
+  }
+}

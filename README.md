@@ -8,11 +8,21 @@ How I work with coding agents every day. Agents write the code; a script decides
 4. **Review.** A script maps the diff onto a path table: low, medium or high. The tier sets how many reviewers look, from which model families, and what has to pass before merge. [pr-risk](skills/pr-risk/SKILL.md)
 5. **Mistakes.** Every rework gets one question: which step should have caught it? A finding caught twice becomes a check.
 
-Only step 3 needs Herdr. The rest works in Claude Code, Codex or pi as is.
+Only step 3 needs Herdr. The rest works in pi, Claude Code or Codex as is.
 
 A worker saying "done", a merged PR, a deploy and the owner's acceptance are four separate events. Only the last one closes an issue.
 
-Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing solution before writing code, change only what the task needs, prove the result, ask before anything irreversible) and [github-projects-api](skills/github-projects-api/SKILL.md), GitHub Projects v2 through `gh` with the API limits I ran into. [astra-guidance](pi/extensions/astra-guidance.ts) is a pi extension for OpenAI/GPT models: adds colleague-style writing and working-style rules to the system prompt, removes pi's built-in `Be concise` line, and raises Codex `text.verbosity` from `low` to `medium`. Link it into `~/.pi/agent/extensions/`.
+Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing solution before writing code, change only what the task needs, prove the result, ask before anything irreversible), [github-projects-api](skills/github-projects-api/SKILL.md) (GitHub Projects v2 through `gh` with the API limits I ran into) and [unslop](skills/unslop/SKILL.md) (removes AI writing tells and vague jargon from outward-facing prose).
+
+## Harnesses
+
+My daily driver is **pi**. Harness-specific packages, extensions and settings live under `harnesses/` so the root [INSTALL.md](INSTALL.md) stays agent-agnostic:
+
+- **[pi](harnesses/pi/INSTALL.md)**: `pi install` package list (web access, cache optimizer, Archimedes UI/diff, resume-after-compact, peak hours, bg-bash, [pi-status-anim](https://github.com/oglenyaboss/pi-status-anim)), local extension ([astra-guidance.ts](harnesses/pi/extensions/astra-guidance.ts) for OpenAI/GPT models), plus clean reference configs for `settings.json`, `mcp.json` and `web-search.json`.
+- **[Claude Code](harnesses/claude-code/INSTALL.md)**: profile skill links, context-saving settings, compact hook and optional tool denials for `herdr-delegate`.
+- **[Codex](harnesses/codex/INSTALL.md)**: shared `~/.agents/skills` layout, `AGENTS.md` and `herdr-delegate` client notes.
+
+Alongside llstack's own skills, [INSTALL.md](INSTALL.md) also offers the upstream skills I use daily: [mattpocock/skills](https://github.com/mattpocock/skills) (MIT) and `frontend-design` from [anthropics/skills](https://github.com/anthropics/skills) (Apache 2.0).
 
 ## From my journal
 
@@ -25,32 +35,15 @@ Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing s
 
 ## Install
 
-Paste this into Claude Code, Codex or pi:
+Paste this into pi, Claude Code or Codex:
 
 ```text
 Read https://raw.githubusercontent.com/oglenyaboss/llstack/main/INSTALL.md and set me up.
 ```
 
-The agent checks what you have, asks which parts you want and shows every change before making it. It clones this repo and links the skills into your agent, so `git pull` updates them. Linux and macOS; on Windows, use WSL.
+The agent checks what you have, asks which parts and harnesses you want and shows every change before making it. It clones this repo and links the skills and extensions into your harness, so `git pull` updates them. Linux and macOS; on Windows, use WSL.
 
-By hand: clone the repo, link `skills/<name>` into your agent's skills directory and follow [INSTALL.md](INSTALL.md) from step 4.
-
-## My Claude Code settings
-
-```json
-{
-  "syncClaudeAiSkills": false,
-  "disableClaudeAiConnectors": true,
-  "disableBundledSkills": true,
-  "enableArtifact": false,
-  "promptSuggestionEnabled": false,
-  "awaySummaryEnabled": false,
-  "autoMemoryEnabled": false,
-  "skillOverrides": {"<rarely used skill>": "name-only"}
-}
-```
-
-Each key turns off a feature I don't use and the context it loads. `name-only` keeps a skill in the listing without its description. With these and the denied tools from [INSTALL.md](INSTALL.md) step 4, the first request of a session went from about 40k input tokens to about 13k on my machine. That was across Claude Code 2.1.306 to 2.1.322 and different projects, so treat it as an observation, not a benchmark. Keep the features you use.
+By hand: clone the repo, link `skills/<name>` into `~/.agents/skills/` (or your harness's skills directory) and follow [INSTALL.md](INSTALL.md) and the matching `harnesses/<name>/INSTALL.md`.
 
 ## Tests
 
