@@ -18,7 +18,7 @@ Also here: [my global rules for agents](rules/AGENTS.md) (look for an existing s
 
 My daily driver is **pi**. Harness-specific packages, extensions and settings live under `harnesses/` so the root [INSTALL.md](INSTALL.md) stays agent-agnostic:
 
-- **[pi](harnesses/pi/INSTALL.md)**: `pi install` package list (web access, cache optimizer, Archimedes UI/diff, resume-after-compact, peak hours, bg-bash, [pi-status-anim](https://github.com/oglenyaboss/pi-status-anim)), local extensions ([astra-guidance.ts](harnesses/pi/extensions/astra-guidance.ts) for OpenAI/GPT models and [archimedes-diff.ts](harnesses/pi/extensions/archimedes-diff.ts) bridge for `@pi-archimedes/diff`), plus clean reference configs for `settings.json`, `mcp.json` and `web-search.json`.
+- **[pi](harnesses/pi/INSTALL.md)**: `pi install` package list (web access, cache optimizer, Archimedes UI/diff, resume-after-compact, peak hours, bg-bash, [pi-status-anim](https://github.com/oglenyaboss/pi-status-anim)), local extension ([astra-guidance.ts](harnesses/pi/extensions/astra-guidance.ts) for OpenAI/GPT models), plus clean reference configs for `settings.json`, `mcp.json` and `web-search.json`.
 - **[Claude Code](harnesses/claude-code/INSTALL.md)**: profile skill links, context-saving settings, compact hook and optional tool denials for `herdr-delegate`.
 - **[Codex](harnesses/codex/INSTALL.md)**: shared `~/.agents/skills` layout, `AGENTS.md` and `herdr-delegate` client notes.
 

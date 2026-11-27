@@ -47,7 +47,7 @@ Ask which keys the user wants. Keep any feature they actively use.
 
    Name the losses before asking: no in-process subagents, no structured question dialog, and any plugin that relies on one of these tools stops working. Recommend leaving this out of a first install; the skill works with those tools enabled.
 
-Before editing `${CLAUDE_DIR}/settings.json`: copy it to `settings.json.bak-llstack`, merge into the existing JSON (keep other keys, append list entries), then confirm `jq empty settings.json` succeeds.
+Before editing `${CLAUDE_DIR}/settings.json`: if it exists and `settings.json.bak-llstack` does not already exist, copy it to `settings.json.bak-llstack`; if it does not exist yet, create it. Merge into the existing JSON (keep other keys, append list entries without duplicates), then confirm `jq empty settings.json` succeeds.
 
 ## 4. Rules
 

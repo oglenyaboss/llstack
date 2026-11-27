@@ -41,9 +41,9 @@ Done when the user has picked parts and leads.
 
 1. Ask where the clone should live (suggest `~/.local/share/llstack`) and run `git clone https://github.com/oglenyaboss/llstack <dir>`. When you are reading this file from a local checkout, use that checkout as `<dir>`. The links below point into it, so it stays at that path.
 2. For each chosen llstack skill, link `<dir>/skills/<skill>` into `~/.agents/skills/` when a lead is pi or Codex (both read it). Claude Code skill linking is handled in [harnesses/claude-code/INSTALL.md](harnesses/claude-code/INSTALL.md). For any other agent, ask the user for its skills directory. When a skill of the same name already exists in any skill directory from step 1, show what it is and ask: replace or keep. Replace moves it to `<agent dir>/llstack-backup/<skill>`, outside the skills directory, so the agent does not load it twice.
-3. Only when external skills were chosen: ask whether the user wants all of `mattpocock/skills` or a subset, and whether they want `frontend-design` from `anthropics/skills`. Install them into `~/.agents/skills/` from their upstream repos (for example via `npx -y skills add mattpocock/skills` and `npx -y skills add anthropics/skills --skill frontend-design`, or by cloning and linking the skill folders). Show the exact command before running it.
+3. Only when external skills were chosen: ask whether the user wants all of `mattpocock/skills` or a subset, and whether they want `frontend-design` from `anthropics/skills`. Install them globally into `~/.agents/skills/` from their upstream repos (for example via `npx -y skills add -g mattpocock/skills` and `npx -y skills add -g anthropics/skills --skill frontend-design`, or by cloning and linking the skill folders). Show the exact command before running it.
 
-Done when `ls -l ~/.agents/skills/` shows every chosen llstack link resolving into `<dir>` and any chosen external skills present.
+Done when `<dir>` is cloned and, if pi or Codex was chosen (or external skills were installed into `~/.agents/skills/`), `ls -l ~/.agents/skills/` shows every chosen llstack link resolving into `<dir>` and any chosen external skills present. (Claude Code-only skill links are checked in step 4.)
 
 ## 4. Harness setup
 
@@ -111,15 +111,16 @@ Done when `.github/risk-tiers.yml` exists, every role has a label, and the Workf
 
 ## 8. Verify
 
-- Every skill link: `ls <link>/SKILL.md`, and `readlink <link>` names a path inside `<dir>`, not another agent's skills directory (two directories linking to each other form a loop that no agent can read).
+- Every llstack skill link: `ls <link>/SKILL.md`, and `readlink <link>` names a path inside `<dir>`, not another agent's skills directory (two directories linking to each other form a loop that no agent can read).
+- Every chosen external skill: `ls <skill>/SKILL.md` succeeds, and if it is a symlink, `readlink <skill>` resolves to its upstream clone without looping back to another agent's skills directory.
 - Every pi extension link (when pi was chosen): `readlink <link>` resolves inside `<dir>/harnesses/pi/extensions/`.
 - `herdr-delegate`: inside Herdr, `<dir>/skills/herdr-delegate/hd` with no arguments prints its usage.
 - `pr-risk`: in a git repository, run it through the link, the path agents will use: `node <link>/scripts/risk.mjs --base origin/HEAD`, adding `--config <link>/references/risk-tiers.example.yml` when the repository has no `.github/risk-tiers.yml`. It prints a tier, or `empty diff: nothing to classify` on a clean branch. Silence means it did not run.
 - Every settings/config file you touched passes `jq empty`.
 
-Then tell the user what went where, the backup paths, what was skipped, and that the skills appear in the next new session.
+Then tell the user what went where, the backup paths, any pi packages newly installed (for later `pi remove` if needed), what was skipped, and that the skills appear in the next new session.
 
 ## Update and remove
 
-- Update: `git -C <dir> pull` (and `pi update` for pi packages). The links pick up the changes.
-- Remove: delete the links and the clone, move items back from `llstack-backup/`, restore `*.bak-llstack` config files, and remove the rules sections you appended.
+- Update: `git -C <dir> pull` (and `pi update` for pi packages). The links pick up the changes. If an older install linked `<dir>/pi/extensions/astra-guidance.ts`, repoint that symlink to `<dir>/harnesses/pi/extensions/astra-guidance.ts`.
+- Remove: run `pi remove <source>` for each pi package installed during setup, delete the links and the clone, move items back from `llstack-backup/`, restore `*.bak-llstack` config files (and delete newly created config files that had no backup), and remove the rules sections you appended.
