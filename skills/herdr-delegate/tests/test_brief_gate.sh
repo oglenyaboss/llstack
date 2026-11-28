@@ -218,6 +218,10 @@ case_brief_gate_readonly_check_rejected() {
   assert_contains "$HD_OUT" "Check: is not allowed for read-only role scout; remove Check: from the brief"
   assert_not_contains "$HD_OUT" "Check needs timeout or gtimeout"
   assert_eq 0 "$(prompt_calls)" "agent prompt calls after rejection without a timeout binary"
+  hd_run ask sk $'Do sidekick work.\n\nCheck: `test -f src/a.txt`'
+  [[ "$HD_RC" -ne 0 ]] || t_fail "hd ask sk accepted Check: without a timeout binary"
+  assert_contains "$HD_OUT" "Check needs timeout or gtimeout"
+  no_state_file sk.role || t_fail "hd ask sk spawned sidekick before refusing missing timeout"
 }
 
 case_brief_gate_readonly_check_followup() {
