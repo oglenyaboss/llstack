@@ -118,7 +118,10 @@ case_wait_batch_rejects_duplicate_name() {
 }
 
 case_wait_batch_sequential_finish() {
-  spawn_two_scouts
+  hd_run spawn s1 sidekick
+  assert_eq 0 "$HD_RC" "hd spawn s1"
+  hd_run spawn s2 sidekick
+  assert_eq 0 "$HD_RC" "hd spawn s2"
   write_hook <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -142,7 +145,7 @@ EOF
 }
 
 case_wait_no_double_settle_after_ask_end() {
-  hd_run spawn s1 scout
+  hd_run spawn s1 sidekick
   assert_eq 0 "$HD_RC" "spawn s1"
   write_hook <<'EOF'
 #!/usr/bin/env bash

@@ -58,4 +58,4 @@ These rules are global. More specific project instructions and the user's curren
 ## Tools
 
 - Start subagents fresh and put all the context they need in the message.
-- Inside Herdr (`HERDR_ENV=1`), lead nontrivial coding tasks with the `herdr-delegate` skill without waiting to be asked; make small obvious edits (a few lines in one file) directly.
+- Inside Herdr (`HERDR_ENV=1`), lead nontrivial tasks (recon, external docs, coding, review) with the `herdr-delegate` skill without waiting to be asked; make small obvious edits (a few lines in one file) directly.
