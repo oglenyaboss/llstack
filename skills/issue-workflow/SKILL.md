@@ -52,9 +52,9 @@ Done when every captured issue has exactly one state role, and every `needs-info
 
 ### 3. Readiness
 
-Fetch the base branch, pin the commit, and check every factual claim against that commit. Record the citation and the SHA. Write acceptance cases. Copy the owner's answer verbatim into the decision section. Set the expected risk and the size.
+Fetch the base branch, pin the commit, and check every factual claim against that commit. Record the citation and the SHA. Fill the brief-aligned sections (`Goal`, `Context`, `Decisions`, `Requirements`, `Removes`, `Traps`, `Acceptance` with `Seam:` and `input → expected`, `Scope`, `Check`) per [templates/issue-ready.md](templates/issue-ready.md) and `skills/brief/SKILL.md`. Copy the owner's answer verbatim into `Decisions`. Set the expected risk and the size.
 
-Procedure: [references/readiness.md](references/readiness.md). Done when every claim has a `path:line` citation at the recorded SHA, every acceptance case is observable, and the decision section is either filled from the owner or marked as not required.
+Procedure: [references/readiness.md](references/readiness.md). Done when every claim has a `path:line` citation at the recorded SHA, the brief sections are complete (`Traps` and literal runtime `Acceptance` cases included), and the owner decision is either filled verbatim or marked as not required.
 
 A fact that fails, or a choice that belongs to the owner, sends the issue to `needs-info` with the question in a comment. Do not write a guess into the body.
 

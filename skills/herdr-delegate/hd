@@ -17,8 +17,8 @@ source "$SKILL_DIR/zcode.sh"
 usage() {
   cat <<'EOF'
 hd spawn <name> <slot> [--agent pi|codex|zcode] [--cwd DIR] [--model M] [--thinking T] [--session FILE]
-hd ask <name> <brief | @file> [--timeout MS]
-hd wait <name> [--timeout MS]
+hd ask <name> <brief | @file> [--timeout MS] [--force]
+hd wait <name...> [--timeout MS]
 hd result <name>
 hd diff <name> [git diff args]
 hd peek <name> [lines]
@@ -358,9 +358,15 @@ cmd_spawn() {
   echo "spawned $name role=$role pane=$pane model=$model cwd=$cwd"
 }
 
+normalize_model() {
+  local m="$1"
+  [[ "$m" =~ ^(.+):(off|minimal|low|medium|high|xhigh|max)$ ]] && m="${BASH_REMATCH[1]}"
+  printf '%s\n' "$m"
+}
+
 require_exact_pi_model() {
   local model="$1" catalog="$2" where="$3" provider id
-  [[ "$model" =~ ^(.+):(off|minimal|low|medium|high|xhigh|max)$ ]] && model="${BASH_REMATCH[1]}"
+  model="$(normalize_model "$model")"
   provider="${model%%/*}"
   id="${model#*/}"
   if awk -v p="$provider" -v i="$id" -v m="$model" '($1 == p && $2 == i) || $2 == m { found = 1 } END { exit !found }' <<<"$catalog"; then
@@ -671,10 +677,11 @@ validate_worker_brief() {
 cmd_ask() {
   local name="${1:-}" brief="${2:-}"; shift 2 || usage
   [[ -n "$name" && -n "$brief" ]] || usage
-  local timeout=600000
+  local timeout=600000 force=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;
+      --force) force=1; shift ;;
       *) usage ;;
     esac
   done
@@ -710,16 +717,22 @@ cmd_ask() {
     die "$name has an ask in flight; continue with: hd wait $name"
   fi
 
-  local rd role seq out session head_commit restored root
+  local rd role seq out session cwd head_commit="" branch="" root restored
   rd="$(run_dir)"
+  cwd="$(agent_cwd "$name")"
   if [[ -f "$rd/$name.red/list" ]]; then
-    root="$(git -C "$(agent_cwd "$name")" rev-parse --show-toplevel)"
+    root="$(git -C "$cwd" rev-parse --show-toplevel)"
     restored="$(restore_red "$root" "$rd/$name.red")"
     printf "hd: restored %s files from an interrupted red run\n" "$restored"
   fi
   role="$(cat "$rd/$name.role" 2>/dev/null || echo unknown)"
   seq=$(( $(find "$rd" -maxdepth 1 -name "$name-*.md" | wc -l) + 1 ))
   validate_worker_brief "$brief" "$check"
+  if head_commit="$(git -C "$cwd" rev-parse HEAD 2>/dev/null)"; then
+    branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+  else
+    head_commit=""
+  fi
   acquire_admit_lock
   trap release_admit_lock EXIT
   if ! check_tree_exclusivity "$name" "$role"; then
@@ -727,18 +740,33 @@ cmd_ask() {
     trap - EXIT
     die "$EXCLUSIVITY_ERROR"
   fi
+  if [[ "$role" == reviewer && -n "$head_commit" ]]; then
+    acquire_review_lock
+    trap 'release_review_lock; release_admit_lock' EXIT
+    if ! check_review_gate "$name" "$(tree_root "$cwd")" "$branch" "$head_commit" "$(agent_model "$name")" "$force"; then
+      release_review_lock
+      release_admit_lock
+      trap - EXIT
+      die "$REVIEW_GATE_ERROR"
+    fi
+    record_review_ask "$name" "$(tree_root "$cwd")" "$branch" "$head_commit" "$(agent_model "$name")"
+    release_review_lock
+    trap release_admit_lock EXIT
+  else
+    rm -f "$rd/$name.review-id"
+  fi
   date +%s > "$rd/$name.ask-start"
   rm -f "$rd/$name.ask-end"
   touch "$rd/$name.brief-validated"
   release_admit_lock
-  trap - EXIT
+  trap 'close_ask "$name"' EXIT INT TERM HUP
   out="$rd/$name-$(printf '%02d' "$seq").md"
   session="$(agent_session "$name")"
   rm -f "$rd/$name.retried"
   rm -f "$rd/$name.tried"
   rm -f "$rd/$name.tried-errors"
   rm -f "$rd/$name.autofix"
-  if head_commit="$(git -C "$(agent_cwd "$name")" rev-parse HEAD 2>/dev/null)"; then
+  if [[ -n "$head_commit" ]]; then
     printf '%s\n' "$head_commit" > "$rd/$name.head"
   else
     rm -f "$rd/$name.head"
@@ -762,6 +790,7 @@ cmd_ask() {
   msg="$(ask_message "$brief" "$out")"
 
   local rc=0 res
+  trap - EXIT INT TERM HUP
   res="$(dispatch_prompt "$name" "$msg" "$timeout" "${out##*/}")" || rc=$?
   if [[ $rc -ne 0 ]]; then
     if grep -q timeout <<<"$res"; then
@@ -780,14 +809,46 @@ cmd_ask() {
 }
 
 finish() {
-  settle_ask "$@"
-  [[ "$(agent_status "$1" 2>/dev/null)" == blocked ]] || date +%s > "$(run_dir)/$1.ask-end"
+  local name="$1" timeout="$2" rd lock i=0 review_id out_file
+  rd="$(run_dir)"
+  if [[ -n "${HD_IN_FINISH:-}" ]]; then
+    settle_ask "$@"
+    return
+  fi
+  lock="$rd/$name.settle.lock"
+  while ! mkdir "$lock" 2>/dev/null; do
+    (( i < 600 )) || die "another process is settling $name"
+    sleep 0.1
+    i=$((i + 1))
+  done
+  trap 'rmdir "$lock" 2>/dev/null || true' EXIT INT TERM HUP
+  if [[ -f "$rd/$name.ask-end" ]]; then
+    rmdir "$lock" 2>/dev/null || true
+    trap - EXIT INT TERM HUP
+    print_result "$name"
+    return 0
+  fi
+  HD_IN_FINISH=1 settle_ask "$@"
+  if [[ -f "$rd/$name.review-id" ]]; then
+    review_id="$(<"$rd/$name.review-id")"
+    out_file="$(cat "$rd/$name.out" 2>/dev/null || true)"
+    if [[ -n "$review_id" && -s "$out_file" ]] && reply_done "$name" && [[ -z "$(provider_error "$name" 2>/dev/null || true)" ]]; then
+      mkdir -p "$RUN_ROOT/review-done"
+      normalize_model "$(agent_model "$name")" > "$RUN_ROOT/review-done/$review_id"
+    fi
+  fi
+  [[ "$(agent_status "$name" 2>/dev/null)" == blocked ]] || date +%s > "$rd/$name.ask-end"
+  rmdir "$lock" 2>/dev/null || true
+  trap - EXIT INT TERM HUP
 }
 
 reply_done() {
   local text line
   text="$(reply_text "$1")"
-  line="$(grep -m1 -E 'STATUS|СТАТУС' <<<"$text" || true)"
+  line="$(grep -E '^[[:space:]]*(STATUS|СТАТУС)[[:space:]]*:' <<<"$text" | tail -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    line="$(grep -E 'STATUS|СТАТУС' <<<"$text" | tail -n 1 || true)"
+  fi
   [[ -n "$line" ]] || return 1
   grep -qiE 'done|готово' <<<"$line"
 }
@@ -1358,6 +1419,84 @@ check_tree_exclusivity() {
   return 1
 }
 
+acquire_review_lock() {
+  mkdir -p "$RUN_ROOT"
+  local i=0
+  while ! mkdir "$RUN_ROOT/.review.lock" 2>/dev/null; do
+    (( i < 100 )) || die "cannot ask reviewer: review ledger is busy"
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+release_review_lock() {
+  rmdir "$RUN_ROOT/.review.lock" 2>/dev/null || true
+}
+
+check_review_gate() {
+  local name="$1" root="$2" branch="$3" head="$4" raw_model="$5" force="$6"
+  local model ledger id prev_rd prev_head prev_model prev_name prev_target active_id done_model h seen joined=""
+  local -a heads=()
+  REVIEW_GATE_ERROR=""
+  (( force == 0 )) || return 0
+  model="$(normalize_model "$raw_model")"
+  ledger="$RUN_ROOT/reviews.jsonl"
+  [[ -f "$ledger" ]] || return 0
+  while IFS= read -r -d '' id &&
+        IFS= read -r -d '' prev_rd &&
+        IFS= read -r -d '' prev_head &&
+        IFS= read -r -d '' prev_model &&
+        IFS= read -r -d '' prev_name &&
+        IFS= read -r -d '' prev_target; do
+    if [[ -f "$RUN_ROOT/review-done/$id" ]]; then
+      done_model="$(cat "$RUN_ROOT/review-done/$id" 2>/dev/null || true)"
+      [[ -n "$done_model" ]] && prev_model="$done_model"
+    else
+      active_id="$(cat "$prev_rd/$prev_name.review-id" 2>/dev/null || true)"
+      [[ "$active_id" == "$id" && ! -f "$prev_rd/$prev_name.ask-end" ]] &&
+        herdr agent get "$prev_target" >/dev/null 2>&1 || continue
+    fi
+    if [[ "$prev_head" == "$head" && "$prev_model" == "$model" ]]; then
+      REVIEW_GATE_ERROR="cannot ask reviewer $name: model $model already reviewed $root at ${head:0:8} (by $prev_name); pass --force to override"
+      return 1
+    fi
+    seen=0
+    for h in "${heads[@]}"; do
+      [[ "$h" == "$prev_head" ]] && { seen=1; break; }
+    done
+    (( seen )) || heads+=("$prev_head")
+  done < <(jq -j --arg root "$root" --arg branch "$branch" '
+    select(.root == $root and .branch == $branch)
+    | (.id, "\u0000", .rd, "\u0000", .head, "\u0000", .model, "\u0000", .name, "\u0000", .target, "\u0000")
+  ' "$ledger")
+  seen=0
+  for h in "${heads[@]}"; do
+    [[ "$h" == "$head" ]] && { seen=1; break; }
+  done
+  if (( ! seen && ${#heads[@]} >= 2 )); then
+    for h in "${heads[@]}"; do joined+="${joined:+, }${h:0:8}"; done
+    REVIEW_GATE_ERROR="cannot ask reviewer $name: $root ($branch) already has ${#heads[@]} review rounds ($joined); pass --force to override"
+    return 1
+  fi
+  return 0
+}
+
+record_review_ask() {
+  local name="$1" root="$2" branch="$3" head="$4" raw_model="$5" rd seq id model target_id
+  rd="$(run_dir)"
+  mkdir -p "$RUN_ROOT"
+  seq="$(cat "$RUN_ROOT/review-seq" 2>/dev/null || echo 0)"
+  seq=$((seq + 1))
+  printf '%s\n' "$seq" > "$RUN_ROOT/review-seq"
+  id="r$seq"
+  model="$(normalize_model "$raw_model")"
+  target_id="$(agent_target "$name")"
+  jq -nc --arg id "$id" --arg rd "$rd" --arg root "$root" --arg branch "$branch" \
+    --arg head "$head" --arg model "$model" --arg name "$name" --arg target "$target_id" \
+    '{id:$id, rd:$rd, root:$root, branch:$branch, head:$head, model:$model, name:$name, target:$target}' >> "$RUN_ROOT/reviews.jsonl"
+  printf '%s\n' "$id" > "$rd/$name.review-id"
+}
+
 run_concurrent() {
   local name="$1" rd root start f other others=()
   rd="$(run_dir)"
@@ -1427,15 +1566,8 @@ cmd_note() {
   echo "noted in $JOURNAL"
 }
 
-cmd_wait() {
-  local name="${1:-}"; shift || usage
-  local timeout=600000
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --timeout) timeout="$2"; shift 2 ;;
-      *) usage ;;
-    esac
-  done
+wait_one() {
+  local name="$1" timeout="$2"
   if [[ "$(agent_kind "$name")" == zcode ]]; then
     [[ -f "$(zcode_request_file "$name")" ]] || die "no pending request for $name"
     local res
@@ -1452,6 +1584,89 @@ cmd_wait() {
     exit 0
   fi
   finish "$name" "$timeout"
+}
+
+cmd_wait() {
+  local timeout=600000 existing
+  local -a names=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout)
+        [[ $# -ge 2 ]] || usage
+        timeout="$2"
+        shift 2
+        ;;
+      -*) usage ;;
+      *)
+        for existing in "${names[@]}"; do
+          [[ "$existing" == "$1" ]] && die "duplicate agent name in wait: $1"
+        done
+        names+=("$1")
+        shift
+        ;;
+    esac
+  done
+  (( ${#names[@]} > 0 )) || usage
+  if (( ${#names[@]} == 1 )); then
+    wait_one "${names[0]}" "$timeout"
+    return
+  fi
+  local tmp i n res state rc fpid overall_rc=0
+  local -a pids=()
+  tmp="$(mktemp -d)"
+  trap 'kill "${pids[@]}" 2>/dev/null || true; rm -rf "$tmp"; exit 143' TERM
+  trap 'kill "${pids[@]}" 2>/dev/null || true; rm -rf "$tmp"; exit 130' INT
+  trap 'kill "${pids[@]}" 2>/dev/null || true; rm -rf "$tmp"; exit 129' HUP
+  for i in "${!names[@]}"; do
+    n="${names[$i]}"
+    (
+      if [[ "$(agent_kind "$n")" == zcode ]]; then
+        if [[ ! -f "$(zcode_request_file "$n")" ]]; then
+          printf 'err:no pending request for %s\n' "$n" > "$tmp/$i.state"
+          exit 0
+        fi
+        res="$(dispatch_wait "$n" "$timeout" 2>&1)" || true
+        if [[ "$res" == timeout ]]; then
+          printf 'timeout\n' > "$tmp/$i.state"
+        else
+          printf 'ready\n' > "$tmp/$i.state"
+        fi
+      elif dispatch_wait "$n" "$timeout"; then
+        printf 'ready\n' > "$tmp/$i.state"
+      else
+        printf 'timeout\n' > "$tmp/$i.state"
+      fi
+    ) &
+    pids+=("$!")
+  done
+  for i in "${!pids[@]}"; do
+    wait "${pids[$i]}" || true
+  done
+  pids=()
+  for i in "${!names[@]}"; do
+    n="${names[$i]}"
+    printf '=== %s ===\n' "$n"
+    state="$(cat "$tmp/$i.state" 2>/dev/null || echo err:wait failed)"
+    case "$state" in
+      timeout)
+        print_still_working "$n"
+        ;;
+      ready)
+        ( set -euo pipefail; finish "$n" "$timeout" ) &
+        fpid=$!
+        rc=0
+        wait "$fpid" || rc=$?
+        (( rc == 0 )) || overall_rc=$rc
+        ;;
+      err:*)
+        printf 'hd: %s\n' "${state#err:}" >&2
+        overall_rc=1
+        ;;
+    esac
+  done
+  trap - TERM INT HUP
+  rm -rf "$tmp"
+  return "$overall_rc"
 }
 
 cmd_diff() {

@@ -1,21 +1,32 @@
-## Facts from the code
+Goal: <one sentence, the observable result>
 
-- <claim> → `path/to/file:line` (checked at `<sha>`)
-- <claim> → `path/to/file:line` (checked at `<sha>`)
+Context:
+- checked at `<sha>`
+- <fact> → `path/to/file:line`
+- pattern to copy: `path/to/file:start-end` (or `none`)
+- existing tests affected: `path/to/test` (or `none`)
 
-## Owner decision
+Decisions:
+- Owner: <verbatim answer from the decision owner, or "Not required: <one line why>". ADR link when the decision constrains future behavior.>
+- D1: <technical choice where the code leaves a choice open, or omit if none>
 
-<verbatim answer from the decision owner, or "Not required: <one line why>". ADR link when the decision constrains future behavior.>
+Requirements:
+- R1: <one observable behavior>
+- R2: <one observable behavior>
 
-## Acceptance cases
+Removes: <what is removed or replaced, or "nothing">
 
-- [ ] <observable outcome: a request returns X, a screen shows Y, a job writes Z, a command exits nonzero>
-- [ ] <observable outcome>
+Traps:
+- <where a plausible implementation goes wrong, with the correct shape> (or `none — <reason>`)
 
-## Expected risk
+Acceptance:
+- Seam: <public function, endpoint, component, or CLI command>
+- R1: <concrete input> → <exact expected literal>
+- Trap: <edge input> → <exact expected result>
 
-<low | medium | high> via `<paths that matched .github/risk-tiers.yml>`
+Scope: `path/to/file` `tests/file.test.ts`
+Check: `<one shell command proving Done when>`
 
-## Size
-
-<xs | s | m>
+---
+Expected risk: <low | medium | high> via `<paths that matched .github/risk-tiers.yml>`
+Size: <xs | s | m>

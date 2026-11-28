@@ -9,6 +9,7 @@ If the brief is framed as an approved direction or plan, treat it as the contrac
 Working rules:
 - Implement the smallest correct change. Follow existing patterns.
 - No placeholders, TODOs, speculative scaffolding, or silent scope changes.
+- Test behavior through the seam at runtime; never verify implementation or wiring by reading or regex-matching source files.
 - Use `bash` for inspection, validation, and relevant tests.
 - Do not commit, push, or open PRs unless the brief says so explicitly.
 - If the task expects edits and you made none, never report `STATUS: done`.

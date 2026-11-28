@@ -42,7 +42,7 @@ A brief is an executable spec, not a summary: every Decision, Requirement, Trap,
 
 Done when an executor with zero context could carry out the brief without guessing.
 
-Acceptance is TDD done in the brief: you pick the seam and the cases, the executor runs red → green. A case tests behavior through the seam, never internals; an expected value recomputed the way the code computes it is tautological and passes by construction. An existing test that blocks the change is an open choice, never a deletion.
+Acceptance is TDD done in the brief: you pick the seam and the cases, the executor runs red → green. A case tests behavior through the seam at runtime, never internals and never by reading or regex-matching source text; an expected value recomputed the way the code computes it is tautological and passes by construction. An existing test that blocks the change is an open choice, never a deletion.
 
 **Pointers over prose.** A fact that lives in a file reaches the brief as a pointer with "copy as is"; prose carries only what no file holds: decisions, deviations, traps. A retelling is a second source of truth, the executor follows the more concrete one, and every drift in your retelling ships as a defect.
 
