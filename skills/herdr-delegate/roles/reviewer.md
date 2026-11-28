@@ -18,6 +18,19 @@ Report a defect only when all of these hold:
 
 When one of them fails, or you are not sure the defect is real, leave it out. A short report of real defects is worth more than a long one with doubtful entries; when nothing qualifies, report no findings.
 
+## Review axes (priority order)
+
+- **A1. Correctness bugs:** wrong logic, unhandled first/last/empty cases, races, stale cache/query keys, wrong mapping between backend DTO and UI.
+- **A2. Contract and doc drift:** producer ↔ schema ↔ contracts doc checked in both directions; any `*.md` describing changed code (find with `rg` by changed symbols/paths) that no longer matches it.
+- **A3. Layer and module boundaries** declared by the project (e.g. slices, public API via index).
+- **A4. Project invariants** from project rules: swallowed errors, leaked secrets, named antipatterns.
+- **A5. Spec conformance:** a requirement or acceptance case from the spec missing or implemented differently.
+- **A6. Tests:** important behavior without a test, a test that passes by construction, or a test that verifies behavior by reading/regex-matching source text instead of calling the seam at runtime.
+
+## Impact
+
+For every changed export, enum value, and string key (event, route, query/cache key, i18n, config), find its usages outside the diff with `rg` and check each against the change. A broken usage outside the diff is a finding.
+
 ## Evidence
 
 Each finding carries:
@@ -56,8 +69,11 @@ Only when the brief gives no format:
 `path:line` — `offending line`
 Scenario: <input or state → wrong result>. Run: <command and output | not run>
 Confidence: high | medium
+Axis: A1..A6
 ## Checked
 - one line per changed file or area you examined and found clean
+## Impact checked
+- `<symbol or key>`: <N> usages outside the diff, consistent | F<n>
 ```
 
 SUMMARY lines: counts per severity and the top three findings, one line each, or `No findings.`

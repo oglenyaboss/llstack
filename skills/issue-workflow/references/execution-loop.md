@@ -14,7 +14,7 @@ Order by the repo's priority labels, then by age. Do not start with whatever is 
 
 Open the issue and check its claims at the current base commit, not the commit recorded at readiness. Base moves; a fact checked last week may be false now.
 
-- All facts hold: continue.
+- All facts hold: continue, carrying the issue's brief sections (`Goal` through `Check`) directly into the worker brief instead of re-deriving them (adjusting `Context`, `Scope`, or `Check` only if base moved or the issue splits into sequential briefs).
 - A fact fails and the ask is unchanged: correct the body with a comment and continue.
 - A fact fails and changes the work, or the body needs a choice it does not contain: comment with the question, set `needs-info`, next issue.
 

@@ -60,11 +60,15 @@ If a claim fails:
 - It was the reporter's hypothesis and the ask still stands: correct the body, say what is actually true, and continue.
 - It changes what should be done, or the code already implements the request: comment with the finding and set `needs-info`, so the owner decides whether the issue still exists.
 
-### 3. Acceptance cases
+### 3. Brief-aligned spec (`Goal` through `Check`)
 
-One line per observable outcome. Observable means someone can check it without reading the diff: a request returns a value, a screen shows a state, a job writes a row, a command exits nonzero.
+A `ready-for-agent` issue uses the same nine sections as an executable worker brief (`skills/brief/SKILL.md` is the single source of truth for their rules): `Goal`, `Context` (with the pinned SHA, patterns to copy, and conflicting tests), `Decisions`, `Requirements` (`R1..Rn`), `Removes`, `Traps`, `Acceptance` (`Seam:` plus one concrete `input → expected` line per `R`, exercised at runtime), `Scope`, and `Check`.
+
+Capture design decisions, traps, and literal acceptance cases here at planning time so execution does not re-invent them. Use `nothing` for `Removes` and `none — <reason>` for `Traps` when nothing applies. Mechanical enforcement of the brief sections stays in `hd` at execution time, not in the issue tracker.
 
 Not acceptance cases: "refactor the module", "make it robust", "add tests". Those are means, not outcomes.
+
+Template: [../templates/issue-ready.md](../templates/issue-ready.md).
 
 ### 4. Owner decision
 
@@ -85,7 +89,7 @@ Size goes in as `xs`, `s`, or `m`. Anything larger is split before it is marked 
 Set `ready-for-agent` only when all four conditions hold:
 
 - the SHA is recorded and every fact cites it;
-- acceptance cases are observable;
+- the nine brief sections from [../templates/issue-ready.md](../templates/issue-ready.md) are filled (`Seam`, `Traps`, `Removes`, literal `Acceptance` cases, `Scope`, `Check`);
 - the decision is verbatim, or marked not required;
 - risk and size are set.
 
