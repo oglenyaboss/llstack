@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: Edit prose to remove AI tells and add human voice. Use when writing or editing outward-facing text such as docs, posts, articles, READMEs, emails, or PR descriptions; skip for routine chat replies and technical status updates.
+description: Edit outward-facing prose (blog posts, articles, READMEs, user docs, emails, PR descriptions) to remove AI tells and add human voice. Do NOT load for chat replies, code changes, issue triage, retrospectives, or status updates.
 ---
 
 # Unslop

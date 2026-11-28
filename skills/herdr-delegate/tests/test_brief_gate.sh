@@ -183,6 +183,103 @@ case_brief_gate_r3_scout() {
   assert_eq 1 "$(prompt_calls)" "agent prompt calls"
 }
 
+spawn_researcher() {
+  local name="$1"
+  hd_config '{"default":{"harness":"pi","model":"prov/m1"},"slots":{"researcher":{"pi_extensions":["/tmp/web.ts"]}}}'
+  hd_run spawn "$name" researcher
+  assert_eq 0 "$HD_RC" "hd spawn $name"
+}
+
+case_brief_gate_readonly_check_rejected() {
+  hd_run spawn sc scout
+  assert_eq 0 "$HD_RC" "hd spawn sc"
+  hd_run spawn rev reviewer
+  assert_eq 0 "$HD_RC" "hd spawn rev"
+  spawn_researcher res
+  printf 'Check: no execution required for source recon.\n' > scout-with-check.md
+  printf 'Check: `true`\n' > reviewer-with-check.md
+  printf 'Check:   \n' > researcher-with-check.md
+  local role name file
+  for role in scout reviewer researcher; do
+    case "$role" in
+      scout) name=sc; file=scout-with-check.md ;;
+      reviewer) name=rev; file=reviewer-with-check.md ;;
+      researcher) name=res; file=researcher-with-check.md ;;
+    esac
+    hd_run ask "$name" "@$file"
+    [[ "$HD_RC" -ne 0 ]] || t_fail "hd ask accepted Check: for $role"
+    assert_contains "$HD_OUT" "Check: is not allowed for read-only role $role; remove Check: from the brief"
+    assert_eq 0 "$(prompt_calls)" "agent prompt calls after $role rejection"
+    assert_eq "" "$(find "$XDG_CACHE_HOME/herdr-delegate" -name "$name-*.brief" -print 2>/dev/null || true)" "brief state written by rejected $role ask"
+  done
+  export PATH="$(path_without timeout gtimeout)"
+  hd_run ask sc @scout-with-check.md
+  [[ "$HD_RC" -ne 0 ]] || t_fail "hd ask accepted Check: without a timeout binary"
+  assert_contains "$HD_OUT" "Check: is not allowed for read-only role scout; remove Check: from the brief"
+  assert_not_contains "$HD_OUT" "Check needs timeout or gtimeout"
+  assert_eq 0 "$(prompt_calls)" "agent prompt calls after rejection without a timeout binary"
+}
+
+case_brief_gate_readonly_check_followup() {
+  hd_run spawn sc scout
+  assert_eq 0 "$HD_RC" "hd spawn sc"
+  hd_run spawn rev reviewer
+  assert_eq 0 "$HD_RC" "hd spawn rev"
+  spawn_researcher res
+  done_hook
+  local role
+  for role in sc rev res; do
+    hd_run ask "$role" 'Map auth.'
+    assert_eq 0 "$HD_RC" "first $role ask"
+  done
+  assert_eq 3 "$(prompt_calls)" "agent prompt calls after the first asks"
+  local pair name
+  for pair in sc:scout rev:reviewer res:researcher; do
+    name="${pair%%:*}"
+    role="${pair##*:}"
+    hd_run ask "$name" $'Follow-up.\nCheck: `true`'
+    [[ "$HD_RC" -ne 0 ]] || t_fail "hd ask accepted a Check: follow-up for $role"
+    assert_contains "$HD_OUT" "Check: is not allowed for read-only role $role; remove Check: from the brief"
+    assert_eq 3 "$(prompt_calls)" "agent prompt calls after rejected $role follow-up"
+  done
+  printf 'Follow-up from a file.\n\nCheck: `true`\n' > followup-with-check.md
+  hd_run ask sc @followup-with-check.md
+  [[ "$HD_RC" -ne 0 ]] || t_fail "hd ask accepted a Check: follow-up file"
+  assert_contains "$HD_OUT" "Check: is not allowed for read-only role scout; remove Check: from the brief"
+  assert_eq 3 "$(prompt_calls)" "agent prompt calls after rejected follow-up file"
+  assert_eq "" "$(find "$XDG_CACHE_HOME/herdr-delegate" -name '*-02.brief' -print 2>/dev/null || true)" "state written by rejected follow-ups"
+}
+
+case_brief_gate_readonly_check_allowed() {
+  hd_run spawn sc scout
+  assert_eq 0 "$HD_RC" "hd spawn sc"
+  hd_run spawn rev reviewer
+  assert_eq 0 "$HD_RC" "hd spawn rev"
+  spawn_researcher res
+  spawn_w1
+  hd_run spawn sk sidekick
+  assert_eq 0 "$HD_RC" "hd spawn sk"
+  done_hook
+  hd_run ask sc 'Mention Check: inline only.'
+  assert_eq 0 "$HD_RC" "scout with inline Check: mention"
+  assert_contains "$HD_OUT" "STATUS: done"
+  assert_eq 1 "$(prompt_calls)" "agent prompt calls after scout ask"
+  hd_run ask rev $'Review the change.\nScope: `src/b.txt`'
+  assert_eq 0 "$HD_RC" "reviewer with Scope:"
+  assert_contains "$HD_OUT" "STATUS: done"
+  hd_run ask res 'Research the topic.'
+  assert_eq 0 "$HD_RC" "researcher without Check:"
+  assert_contains "$HD_OUT" "STATUS: done"
+  CHECK_SECTION='Check: `test -f src/a.txt`' emit_brief worker-brief.md
+  hd_run ask w1 @worker-brief.md
+  assert_eq 0 "$HD_RC" "worker with Check:"
+  assert_contains "$HD_OUT" "STATUS: done"
+  printf 'Do sidekick work.\n\nCheck: `test -f src/a.txt`\n' > sidekick-check.md
+  hd_run ask sk @sidekick-check.md
+  assert_eq 0 "$HD_RC" "sidekick with Check:"
+  assert_contains "$HD_OUT" "STATUS: done"
+}
+
 case_brief_gate_r4_one_line_arrows() {
   spawn_w1
   done_hook
@@ -477,6 +574,9 @@ run_case brief_gate_r5_real_check case_brief_gate_r5_real_check
 run_case brief_gate_r5_chained_check case_brief_gate_r5_chained_check
 run_case brief_gate_r6_docs case_brief_gate_r6_docs
 run_case brief_gate_r3_scout case_brief_gate_r3_scout
+run_case brief_gate_readonly_check_rejected case_brief_gate_readonly_check_rejected
+run_case brief_gate_readonly_check_followup case_brief_gate_readonly_check_followup
+run_case brief_gate_readonly_check_allowed case_brief_gate_readonly_check_allowed
 run_case brief_gate_r4_one_line_arrows case_brief_gate_r4_one_line_arrows
 run_case brief_gate_r4_red_green case_brief_gate_r4_red_green
 run_case brief_gate_r1_retry_still_seq1 case_brief_gate_r1_retry_still_seq1

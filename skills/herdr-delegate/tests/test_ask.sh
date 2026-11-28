@@ -732,6 +732,30 @@ EOF
   assert_eq 2 "$(prompt_calls)" "w2 got no prompt"
 }
 
+case_autofix_second_round_timeout_releases_lock() {
+  spawn_w1
+  write_hook <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HD_TEST_LIB"
+case "$3" in
+  1|2)
+    turn "$2" "still broken
+STATUS: done" ;;
+  3)
+    printf 'timeout waiting\n'
+    exit 1 ;;
+esac
+EOF
+  local brief=$'Do the work.\n\nCheck: `test -f src/missing.txt`'
+  hd_run ask w1 "$brief"
+  assert_eq 0 "$HD_RC" "second autofix timeout exit"
+  assert_contains "$HD_OUT" '--- autofix 2/2' "second autofix round"
+  assert_contains "$HD_OUT" 'STATUS: still_working' "second autofix timeout status"
+  assert_not_contains "$HD_OUT" 'unbound variable' "no unbound variable in EXIT trap"
+  no_state_file w1.settle.lock || t_fail "second autofix timeout leaked settle.lock"
+}
+
 case_second_ask_same_worker_refused() {
   spawn_w1
   write_hook <<'EOF'
@@ -1265,6 +1289,7 @@ run_case ask_failed_dispatch_closes_ask case_failed_dispatch_closes_open_ask
 run_case ask_retry_send_failure_closes_ask case_retry_send_failure_closes_ask
 run_case ask_autofix_send_failure_closes_ask case_autofix_send_failure_closes_ask
 run_case ask_autofix_timeout_keeps_ask_open case_autofix_timeout_keeps_ask_open
+run_case ask_autofix_second_round_timeout_releases_lock case_autofix_second_round_timeout_releases_lock
 run_case ask_second_ask_same_worker_refused case_second_ask_same_worker_refused
 run_case ask_fallback_switch_keeps_ask_state case_fallback_switch_keeps_ask_state
 run_case ask_concurrent_admission_refuses_second case_concurrent_admission_refuses_second

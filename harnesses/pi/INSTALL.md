@@ -35,7 +35,8 @@ Link the chosen extensions from `<llstack dir>/harnesses/pi/extensions/` into `$
 
 | Extension | What it does |
 | --- | --- |
-| `astra-guidance.ts` | OpenAI/GPT prompt rules: colleague-style writing, removes pi's `Be concise` line, raises Codex `text.verbosity` from `low` to `medium` |
+| `astra-guidance.ts` | GPT Astra prompt rules: colleague-style writing, removes pi's `Be concise` line, raises Codex `text.verbosity` from `low` to `medium` |
+| `sol-guidance.ts` | GPT Sol prompt rules: removes pi's `Be concise` line, raises `text.verbosity` from `low` to `medium`, suppresses unsolicited "what I didn't touch" disclaimers and invented blockers while keeping real obstacle disclosure |
 
 If a file with the same name already exists in `${PI_DIR}/extensions/`, show what it is and ask whether to move it to `${PI_DIR}/llstack-backup/` before linking.
 

@@ -11,8 +11,8 @@ Carry authorized work to done instead of stopping with a suggested next step or 
 
 When reporting completed work or a check, state any real blocker, failed or skipped check, or gap that affects the result. In discussion or planning, distinguish real blockers from things to verify later rather than framing future verification as a blocker. Keep to the task as given; put extra work you notice along the way in the final message as a proposal.`;
 
-function isGptModel(model?: { id: string; provider: string }): boolean {
-	return Boolean(model?.id.startsWith("gpt-") || model?.provider === "openai-codex");
+function isAstraModel(model?: { id: string; provider: string }): boolean {
+	return Boolean(model?.id && /^gpt-.*-astra\b/.test(model.id));
 }
 
 function stripConciseRule(input: unknown): unknown {
@@ -30,12 +30,12 @@ function stripConciseRule(input: unknown): unknown {
 export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event, ctx) => {
 		const sections = event.systemPromptOptions.sections;
-		if (isGptModel(ctx.model)) sections[SECTION] = GUIDANCE;
-		else delete sections[SECTION];
+		if (isAstraModel(ctx.model)) sections[SECTION] = GUIDANCE;
+		else if (sections[SECTION] === GUIDANCE) delete sections[SECTION];
 	});
 
 	pi.on("before_provider_request", (event, ctx) => {
-		if (!isGptModel(ctx.model)) return;
+		if (!isAstraModel(ctx.model)) return;
 		const payload = event.payload as Record<string, unknown> | null;
 		if (!payload || typeof payload !== "object") return;
 		const next: Record<string, unknown> = { ...payload };
